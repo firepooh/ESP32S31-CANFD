@@ -6,6 +6,8 @@
  * - Received frames and state changes are pushed from the ISR into an event queue
  *   and handled by a per-port RX task (dump print or test hook).
  * - The RX task also prints bus error summaries and starts the automatic bus-off recovery.
+ * - With CONFIG_CANFD_QUEUE_IN_PSRAM the queue buffers and the TX frame pool live in PSRAM.
+ *   The queue control blocks stay in internal RAM because they hold spinlocks (atomic access).
  */
 #include <stdio.h>
 #include <string.h>
@@ -14,7 +16,10 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
+#include "freertos/idf_additions.h"
 #include "esp_attr.h"
+#include "esp_heap_caps.h"
+#include "esp_memory_utils.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -32,6 +37,14 @@ static const char *TAG = "canfd_port";
 #define RX_TASK_PRIORITY        10
 #define TIMESTAMP_RES_HZ        1000000     // 1 us RX timestamp
 #define ERRLOG_PERIOD_US        500000
+
+#if CONFIG_CANFD_QUEUE_IN_PSRAM
+#define QUEUE_BUF_CAPS          (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#else
+#define QUEUE_BUF_CAPS          (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+#endif
+
+typedef uint16_t tx_idx_t;      // index into tx_slots, queued in tx_free_q
 
 typedef enum {
     PORT_EVT_RX = 0,
@@ -59,10 +72,14 @@ typedef struct {
     twai_node_handle_t node;
     QueueHandle_t evt_q;
     QueueHandle_t tx_free_q;        // indexes of free entries in tx_slots
+    StaticQueue_t evt_q_cb;         // control blocks: internal RAM (this struct is static)
+    StaticQueue_t tx_free_q_cb;
+    uint8_t *evt_q_buf;             // queue storage: QUEUE_BUF_CAPS
+    uint8_t *tx_free_q_buf;
+    tx_slot_t *tx_slots;            // TX frame pool: QUEUE_BUF_CAPS
     SemaphoreHandle_t tx_lock;
     TaskHandle_t rx_task;
     TaskHandle_t closer;
-    tx_slot_t tx_slots[TX_POOL_SIZE];
     canfd_port_stats_t stats;
     canfd_port_stats_t errlog_stats;    // snapshot of the last error summary
     volatile bool dump;
@@ -107,7 +124,7 @@ static IRAM_ATTR bool port_on_tx_done(twai_node_handle_t handle, const twai_tx_d
 
     const tx_slot_t *slot = (const tx_slot_t *)edata->done_tx_frame;
     if (slot >= p->tx_slots && slot < p->tx_slots + TX_POOL_SIZE) {
-        uint8_t idx = (uint8_t)(slot - p->tx_slots);
+        tx_idx_t idx = (tx_idx_t)(slot - p->tx_slots);
         xQueueSendFromISR(p->tx_free_q, &idx, &woken);
     }
     return woken == pdTRUE;
@@ -137,6 +154,10 @@ static IRAM_ATTR bool port_on_rx_done(twai_node_handle_t handle, const twai_rx_d
     p->stats.rx++;
     if (xQueueSendFromISR(p->evt_q, &evt, &woken) != pdTRUE) {
         p->stats.rx_drop++;
+    }
+    UBaseType_t fill = uxQueueMessagesWaitingFromISR(p->evt_q);
+    if (fill > p->stats.rxq_peak) {
+        p->stats.rxq_peak = fill;
     }
     return woken == pdTRUE;
 }
@@ -316,7 +337,7 @@ static void port_rx_task(void *arg)
 static void port_refill_tx_pool(canfd_port_t *p)
 {
     xQueueReset(p->tx_free_q);
-    for (uint8_t i = 0; i < TX_POOL_SIZE; i++) {
+    for (tx_idx_t i = 0; i < TX_POOL_SIZE; i++) {
         xQueueSend(p->tx_free_q, &i, 0);
     }
 }
@@ -340,13 +361,19 @@ static void port_release(canfd_port_t *p, bool node_enabled)
         p->node = NULL;
     }
     if (p->evt_q) {
-        vQueueDelete(p->evt_q);
+        vQueueDelete(p->evt_q);     // static queue: only detaches, the buffers are freed below
         p->evt_q = NULL;
     }
     if (p->tx_free_q) {
         vQueueDelete(p->tx_free_q);
         p->tx_free_q = NULL;
     }
+    heap_caps_free(p->evt_q_buf);
+    heap_caps_free(p->tx_free_q_buf);
+    heap_caps_free(p->tx_slots);
+    p->evt_q_buf = NULL;
+    p->tx_free_q_buf = NULL;
+    p->tx_slots = NULL;
     if (p->tx_lock) {
         vSemaphoreDelete(p->tx_lock);
         p->tx_lock = NULL;
@@ -445,8 +472,15 @@ esp_err_t canfd_port_open(int port, const canfd_port_config_t *cfg)
     p->fault = CANFD_FAULT_NONE;
     p->sig_saved = false;
 
-    p->evt_q = xQueueCreate(CONFIG_CANFD_RX_QUEUE_DEPTH, sizeof(port_evt_t));
-    p->tx_free_q = xQueueCreate(TX_POOL_SIZE, sizeof(uint8_t));
+    // Large buffers go to QUEUE_BUF_CAPS (PSRAM or internal); the queue control blocks are part
+    // of the static port struct in internal RAM because they hold spinlocks
+    p->evt_q_buf = heap_caps_malloc(CONFIG_CANFD_RX_QUEUE_DEPTH * sizeof(port_evt_t), QUEUE_BUF_CAPS);
+    p->tx_free_q_buf = heap_caps_malloc(TX_POOL_SIZE * sizeof(tx_idx_t), QUEUE_BUF_CAPS);
+    p->tx_slots = heap_caps_calloc(TX_POOL_SIZE, sizeof(tx_slot_t), QUEUE_BUF_CAPS);
+    ESP_GOTO_ON_FALSE(p->evt_q_buf && p->tx_free_q_buf && p->tx_slots, ESP_ERR_NO_MEM, err, TAG,
+                      "CAN%d: no mem for queue buffers", port);
+    p->evt_q = xQueueCreateStatic(CONFIG_CANFD_RX_QUEUE_DEPTH, sizeof(port_evt_t), p->evt_q_buf, &p->evt_q_cb);
+    p->tx_free_q = xQueueCreateStatic(TX_POOL_SIZE, sizeof(tx_idx_t), p->tx_free_q_buf, &p->tx_free_q_cb);
     p->tx_lock = xSemaphoreCreateMutex();
     ESP_GOTO_ON_FALSE(p->evt_q && p->tx_free_q && p->tx_lock, ESP_ERR_NO_MEM, err, TAG, "no mem");
     port_refill_tx_pool(p);
@@ -554,10 +588,14 @@ esp_err_t canfd_port_send(int port, const canfd_msg_t *msg, int timeout_ms)
     const uint8_t len = h->fdf ? canfd_round_fd_len(msg->len) : msg->len;
     const TickType_t ticks = (timeout_ms < 0) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
     esp_err_t ret = ESP_ERR_TIMEOUT;
-    uint8_t idx;
+    tx_idx_t idx;
 
     xSemaphoreTake(p->tx_lock, portMAX_DELAY);
     if (xQueueReceive(p->tx_free_q, &idx, ticks) == pdTRUE) {
+        uint32_t in_use = TX_POOL_SIZE - uxQueueMessagesWaiting(p->tx_free_q);
+        if (in_use > p->stats.txpool_peak) {
+            p->stats.txpool_peak = in_use;
+        }
         tx_slot_t *slot = &p->tx_slots[idx];
         slot->frame = (twai_frame_t) {
             .header = *h,
@@ -624,6 +662,33 @@ void canfd_port_reset_stats(int port)
         memset(&p->stats, 0, sizeof(canfd_port_stats_t));
         memset(&p->errlog_stats, 0, sizeof(canfd_port_stats_t));
     }
+}
+
+void canfd_port_reset_peaks(int port)
+{
+    if (canfd_port_is_valid(port)) {
+        canfd_port_t *p = port_get(port);
+        p->stats.rxq_peak = 0;
+        p->stats.txpool_peak = 0;
+    }
+}
+
+esp_err_t canfd_port_get_mem_info(int port, canfd_port_mem_info_t *info)
+{
+    ESP_RETURN_ON_FALSE(canfd_port_is_open(port) && info, ESP_ERR_INVALID_STATE, TAG, "CAN%d not open", port);
+    const canfd_port_t *p = port_get(port);
+
+    *info = (canfd_port_mem_info_t) {
+        .rxq_depth = CONFIG_CANFD_RX_QUEUE_DEPTH,
+        .rxq_item_size = sizeof(port_evt_t),
+        .rxq_buf = p->evt_q_buf,
+        .rxq_in_psram = esp_ptr_external_ram(p->evt_q_buf),
+        .txpool_size = TX_POOL_SIZE,
+        .txpool_item_size = sizeof(tx_slot_t),
+        .txpool_buf = p->tx_slots,
+        .txpool_in_psram = esp_ptr_external_ram(p->tx_slots),
+    };
+    return ESP_OK;
 }
 
 void canfd_port_set_errlog(int port, bool enable)

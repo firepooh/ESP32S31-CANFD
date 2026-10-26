@@ -16,6 +16,7 @@
 #include "esp_console.h"
 #include "canfd_port.h"
 #include "cmd_canfd.h"
+#include "cmd_system.h"
 
 static const char *TAG = "app";
 
@@ -33,6 +34,7 @@ static void print_banner(void)
            " can_test -D dual      both directions at the same time\n"
            " can_send 1 123 1122   send a frame (see 'help can_send')\n"
            " can_dump              print received frames\n"
+           " mem [-t 1024]         RAM / PSRAM usage and PSRAM test\n"
            " help                  all commands\n"
            "==============================================================\n",
            CONFIG_CANFD_PORT1_TX_GPIO, CONFIG_CANFD_PORT1_RX_GPIO,
@@ -65,6 +67,7 @@ void app_main(void)
 #endif
 
     register_canfd_commands();
+    register_system_commands();
     print_banner();
 
 #if CONFIG_CANFD_AUTO_INIT

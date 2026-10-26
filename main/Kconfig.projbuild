@@ -57,13 +57,23 @@ menu "CAN-FD 2-Port Test Configuration"
 
     config CANFD_TX_QUEUE_DEPTH
         int "Driver TX queue depth per port"
-        range 1 64
-        default 16
+        range 1 250
+        default 64
 
     config CANFD_RX_QUEUE_DEPTH
         int "Application RX queue depth per port"
-        range 8 512
-        default 128
+        range 8 8192
+        default 1024
+
+    config CANFD_QUEUE_IN_PSRAM
+        bool "Place CAN RX/TX queue buffers and the TX frame pool in PSRAM"
+        depends on SPIRAM
+        default y
+        help
+            The ISR writes received frames into the RX queue buffer and the driver reads
+            TX frames from the TX frame pool, so both are accessed from interrupt context.
+            Only the data buffers move to PSRAM; the queue control blocks (which contain
+            spinlocks) stay in internal RAM.
 
     config CANFD_AUTO_INIT
         bool "Initialize both ports with default settings at boot"

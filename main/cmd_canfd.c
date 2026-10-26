@@ -23,6 +23,7 @@
 #include "esp_console.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "esp_timer.h"
 #include "canfd_port.h"
 #include "cmd_canfd.h"
@@ -457,6 +458,14 @@ static int cmd_can_status(int argc, char **argv)
                s.bus_err, s.bit_err, s.form_err, s.stuff_err, s.ack_err, s.arb_lost);
         printf("      err_passive=%" PRIu32 "  bus_off=%" PRIu32 "  recover=%" PRIu32 "  fault=%s\n",
                s.err_passive, s.bus_off, s.recover, canfd_fault_str(canfd_port_get_fault(port)));
+        canfd_port_mem_info_t mi;
+        if (canfd_port_get_mem_info(port, &mi) == ESP_OK) {
+            printf("      rxq %" PRIu32 " x %" PRIu32 " B @%p (%s) peak=%" PRIu32
+                   "   txpool %" PRIu32 " x %" PRIu32 " B @%p (%s) peak=%" PRIu32 "\n",
+                   mi.rxq_depth, mi.rxq_item_size, mi.rxq_buf, mi.rxq_in_psram ? "PSRAM" : "internal", s.rxq_peak,
+                   mi.txpool_size, mi.txpool_item_size, mi.txpool_buf, mi.txpool_in_psram ? "PSRAM" : "internal",
+                   s.txpool_peak);
+        }
         if (s_status_args.clear->count) {
             canfd_port_reset_stats(port);
             printf("      (statistics cleared)\n");
@@ -593,6 +602,7 @@ typedef struct {
     canfd_msg_t tmpl;           // header and payload length of every test frame
     uint32_t count;
     uint32_t gap_ms;
+    uint32_t rx_delay_us;       // simulated slow receiver: busy time per received frame
     /* sender side */
     uint32_t queued;
     esp_err_t tx_err;
@@ -620,6 +630,7 @@ static struct {
     struct arg_lit *classic;
     struct arg_lit *nobrs;
     struct arg_int *gap;
+    struct arg_int *rxdelay;
     struct arg_int *timeout;
     struct arg_end *end;
 } s_test_args;
@@ -647,6 +658,9 @@ static void test_rx_hook(int port, const canfd_msg_t *m, void *arg)
     if (h->id != e->id || h->ide != e->ide) {
         t->rx_other++;
         return;
+    }
+    if (t->rx_delay_us) {
+        esp_rom_delay_us(t->rx_delay_us);   // slow consumer: lets the RX queue fill up
     }
     t->last_rx_us = esp_timer_get_time();
 
@@ -765,6 +779,7 @@ static void test_print_port_diff(int port, const canfd_port_stats_t *d)
            "  arb_lost +%" PRIu32 "  rx_drop +%" PRIu32 "  %s TEC=%u REC=%u\n",
            port, d->bus_err, d->bit_err, d->form_err, d->stuff_err, d->ack_err, d->arb_lost, d->rx_drop,
            canfd_state_str(st.state), st.tx_error_count, st.rx_error_count);
+    printf("        rxq_peak %" PRIu32 "  txpool_peak %" PRIu32 "\n", d->rxq_peak, d->txpool_peak);
     if (d->err_passive || d->bus_off) {
         printf("        err_passive +%" PRIu32 "  bus_off +%" PRIu32 "  recover +%" PRIu32 "\n",
                d->err_passive, d->bus_off, d->recover);
@@ -786,6 +801,8 @@ static void stats_diff(const canfd_port_stats_t *a, const canfd_port_stats_t *b,
     d->bus_off = b->bus_off - a->bus_off;
     d->err_passive = b->err_passive - a->err_passive;
     d->recover = b->recover - a->recover;
+    d->rxq_peak = b->rxq_peak;          // peaks are reset at the start of each run
+    d->txpool_peak = b->txpool_peak;
 }
 
 /* Run 1 link, or 2 links at the same time (the second one from a helper task). Returns true on PASS. */
@@ -810,9 +827,11 @@ static bool test_run(link_test_t *links, int num, int timeout_ms)
         timeout_ms = (int)(est_ns * 2 / 1000000) + 1000;
         for (int i = 0; i < num; i++) {
             timeout_ms += links[i].gap_ms * links[i].count;
+            timeout_ms += (int)((uint64_t)links[i].rx_delay_us * links[i].count / 1000);
         }
     }
     for (int port = CANFD_PORT_FIRST; port <= CANFD_PORT_LAST; port++) {
+        canfd_port_reset_peaks(port);
         canfd_port_get_status(port, NULL, &before[port - 1]);
     }
     for (int i = 0; i < num; i++) {
@@ -955,6 +974,7 @@ static int cmd_can_test(int argc, char **argv)
         t->tmpl.header.fdf = fd;
         t->tmpl.header.brs = fd && !s_test_args.nobrs->count && src_cfg->data_bitrate && dst_cfg->data_bitrate;
         t->tmpl.len = (uint8_t)len;
+        t->rx_delay_us = s_test_args.rxdelay->count ? (uint32_t)s_test_args.rxdelay->ival[0] : 0;
         if (fd && !s_test_args.nobrs->count && !t->tmpl.header.brs) {
             printf("Note: no data bitrate on CAN%d/CAN%d, sending FD without BRS\n", t->src, t->dst);
         }
@@ -1031,6 +1051,7 @@ void register_canfd_commands(void)
     s_test_args.classic = arg_lit0("c", "classic", "classic CAN frames instead of FD");
     s_test_args.nobrs = arg_lit0(NULL, "nobrs", "FD frames without bit rate switch");
     s_test_args.gap = arg_int0("g", "gap", "<ms>", "delay between frames (default: 0, back-to-back)");
+    s_test_args.rxdelay = arg_int0("w", "rxdelay", "<us>", "slow receiver: busy time per received frame (fills the RX queue)");
     s_test_args.timeout = arg_int0("t", "timeout", "<ms>", "RX wait time (default: estimated from bitrate)");
     s_test_args.end = arg_end(10);
 

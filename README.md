@@ -8,6 +8,7 @@ USB Serial/JTAG 콘솔 명령으로 두 포트를 설정하고 송수신과 버�
 | 항목 | 내용 |
 |---|---|
 | 보드 | ESP32-S31-Function-CoreBoard-1 (ESP32-S31-WROOM-3, 플래시 16 MB) |
+| PSRAM | 16 MB Octal (AP Memory 128 Mbit), 200 MHz, 힙에 추가 |
 | CAN1 | TX GPIO35 (J2-25), RX GPIO36 (J2-24) |
 | CAN2 | TX GPIO37 (J2-23), RX GPIO38 (J2-22) |
 | 콘솔 | USB Serial/JTAG 포트 (플래시와 콘솔을 같은 포트로 사용) |
@@ -52,6 +53,7 @@ sdkconfig를 지웠을 때만 set-target을 다시 실행한다.
 | `can_errlog [port] [on\|off]` | 버스 에러 요약 로그를 켜거나 끈다 (기본 on) |
 | `can_fault <port> <dominant\|recessive\|off>` | TX 핀에 고장을 주입하거나 해제한다 |
 | `can_test [-D dir] [-n n] [-l n] ...` | 두 포트 사이 전송을 시험한다 |
+| `mem [-t KB] [-b KB] [-s]` | 내부 RAM과 PSRAM 사용량을 보여 준다. `-t` 시험, `-b`/`-s` 백그라운드 부하 |
 | `help [cmd]` | 명령 도움말을 보여 준다 |
 
 port는 `1`, `2`, `all`로 지정한다. `can1`, `can2`도 쓸 수 있다.
@@ -173,6 +175,56 @@ TX 핀을 컨트롤러에서 떼어 GPIO로 고정한다. 닫힌 포트에도 �
 - 트랜시버에는 TXD 우성 타임아웃이 있다. 그래서 `can_fault dominant`로는 버스를 계속 우성으로 묶을 수 없다.
   버스 자체의 단락(CANH-CANL, CANH-GND)은 배선으로 만들어야 한다.
 - REC는 수신에 성공해야만 내려간다. 송신만 하는 노드는 REC 때문에 PASSIVE에 오래 머물 수 있다.
+
+## PSRAM
+
+`CONFIG_SPIRAM`을 켜서 16 MB PSRAM을 힙에 추가했다. 설정은 `sdkconfig.defaults`에 있다.
+
+- 모드는 8선(Octal), 클럭은 200 MHz다. 부팅할 때 타이밍 튜닝과 메모리 시험을 한다.
+- `malloc()`은 16 KB 이하를 내부 RAM에, 그보다 큰 블록을 PSRAM에 할당한다.
+- 부팅 시 메모리 시험 때문에 부팅이 약 0.36초 늘어난다. 필요 없으면 `CONFIG_SPIRAM_MEMTEST`를 끈다.
+
+### CAN 큐를 PSRAM에 배치
+
+`CONFIG_CANFD_QUEUE_IN_PSRAM`(기본 on)을 켜면 ISR이 쓰는 CAN 버퍼를 PSRAM에 둔다.
+
+| 버퍼 | 크기 (포트당) | 위치 |
+|---|---|---|
+| RX 이벤트 큐 저장 공간 | 1024 x 104 B (약 104 KB) | PSRAM |
+| TX 빈 슬롯 큐 저장 공간 | 68 x 2 B | PSRAM |
+| TX 프레임 풀 | 68 x 104 B | PSRAM |
+| 큐 제어 블록 (StaticQueue_t) | 수십 B | 내부 RAM |
+| 드라이버 TX 큐 (64칸) | 드라이버 할당 | 내부 RAM |
+
+- 큐 제어 블록에는 스핀락이 들어 있다. S31에서 PSRAM의 원자 명령 지원이 문서로 확인되지 않아 내부 RAM에 남겼다.
+- 큐 깊이는 menuconfig의 `CANFD_RX_QUEUE_DEPTH`(기본 1024)와 `CANFD_TX_QUEUE_DEPTH`(기본 64)로 바꾼다.
+- `can_status`는 버퍼 주소와 위치(PSRAM/internal), 최고 사용량(peak)을 보여 준다.
+- `can_test -w <us>`는 수신 쪽 처리를 일부러 늦춰 RX 큐를 채운다.
+- `mem -b <KB>`로 PSRAM 백그라운드 부하를 걸고, `mem -s`로 멈춘 뒤 결과를 본다.
+
+고부하 시험 결과는 다음과 같다. 모든 시험에서 bus_err와 데이터 불일치는 0이었다.
+
+| 시험 | 조건 | 결과 |
+|---|---|---|
+| `can_test -D dual -n 20000` | 500k/2M, 64 B, 양방향 동시 | 4만 개 PASS, TX 풀 68칸 모두 사용 |
+| `can_test -D dual -n 20000 -l 8` | 1M/8M, 8 B (버스 약 21,500 frames/s) | 4만 개 PASS |
+| `can_test -D dual -n 20000` | 1M/8M, 64 B | 4만 개 PASS, 합계 약 6.4 Mbit/s |
+| `can_test -D 12 -n 1300 -l 8 -w 200` | RX 큐 채우기 | PASS, rxq_peak 990/1024, rx_drop 0 |
+| `can_test -D 12 -n 3000 -l 8 -w 200` | RX 큐 넘치기 | FAIL(의도), rxq_peak 1024, rx_drop 1265 = RX lost 1265, 받은 1735개 데이터 모두 일치 |
+| `mem -b 4096` + `can_test -D dual -n 20000 -l 8` | PSRAM 부하 중 1M/8M | 4만 개 PASS. PSRAM 부하 쪽도 약 1.8 GB 쓰기/검증 에러 0 |
+
+큐를 PSRAM으로 옮긴 뒤 내부 RAM 여유는 약 30 KB 늘었다(406 KB에서 436 KB).
+
+보드에서 확인한 결과는 다음과 같다.
+
+```text
+I esp_psram: Found 16MB PSRAM device
+I esp_psram: Speed: 200MHz
+I esp_psram: SPI SRAM memory test OK
+I esp_psram: Adding pool of 16384K of PSRAM memory to heap allocator
+canfd> mem -t 12288
+PSRAM test: 12288 KB  write 66278 KB/s  read 75238 KB/s  errors 0  PASS
+```
 
 ## 참고
 

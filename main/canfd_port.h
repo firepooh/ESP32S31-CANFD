@@ -55,7 +55,20 @@ typedef struct {
     uint32_t bus_off;           /**< Number of transitions into bus-off */
     uint32_t err_passive;       /**< Number of transitions into error passive */
     uint32_t recover;           /**< Bus-off recoveries started (manual and automatic) */
+    uint32_t rxq_peak;          /**< Highest RX queue fill level seen (frames) */
+    uint32_t txpool_peak;       /**< Highest number of TX frame slots in use */
 } canfd_port_stats_t;
+
+typedef struct {
+    uint32_t rxq_depth;         /**< RX queue length (events) */
+    uint32_t rxq_item_size;     /**< Bytes per RX queue entry */
+    const void *rxq_buf;        /**< RX queue storage */
+    bool rxq_in_psram;
+    uint32_t txpool_size;       /**< TX frame slots */
+    uint32_t txpool_item_size;
+    const void *txpool_buf;
+    bool txpool_in_psram;
+} canfd_port_mem_info_t;
 
 typedef struct {
     twai_frame_header_t header;
@@ -93,6 +106,8 @@ esp_err_t canfd_port_wait_tx_done(int port, int timeout_ms);
 
 esp_err_t canfd_port_get_status(int port, twai_node_status_t *status, canfd_port_stats_t *stats);
 void canfd_port_reset_stats(int port);
+void canfd_port_reset_peaks(int port);
+esp_err_t canfd_port_get_mem_info(int port, canfd_port_mem_info_t *info);
 
 void canfd_port_set_dump(int port, bool enable);
 bool canfd_port_get_dump(int port);
