@@ -1,0 +1,771 @@
+<title>ESP32-S31 CAN-FD 버스 에러 시험</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: single reading column (test report), scenario cards stacked, logs scroll inside their own box */
+:root {
+  --bg: #f5f7f8;
+  --surface: #ffffff;
+  --ink: #16232b;
+  --muted: #5b6b74;
+  --line: #d6dee2;
+  --accent: #0b6e72;          /* bus teal */
+  --accent-soft: #e0f0f0;
+  --code-bg: #eef2f4;
+  --ok: #1d7a46;   --ok-bg: #e2f3e9;
+  --warn: #9a6200; --warn-bg: #fbf0d9;
+  --bad: #b3261e;  --bad-bg: #fbe3e1;
+  --info: #3b5bab; --info-bg: #e5ebf8;
+  --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --step--1: 0.8125rem;
+  --step-0: 0.9375rem;
+  --step-1: 1.125rem;
+  --step-2: 1.5rem;
+  --step-3: 2rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f171b; --surface: #162228; --ink: #e3ecef; --muted: #93a6ae; --line: #2a3a42;
+    --accent: #4fc3c3; --accent-soft: #123536; --code-bg: #1a272e;
+    --ok: #6fd39a; --ok-bg: #133524; --warn: #f0b85a; --warn-bg: #3a2b0f;
+    --bad: #ff8a80; --bad-bg: #3d1a18; --info: #9bb4ff; --info-bg: #1c2747;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f171b; --surface: #162228; --ink: #e3ecef; --muted: #93a6ae; --line: #2a3a42;
+  --accent: #4fc3c3; --accent-soft: #123536; --code-bg: #1a272e;
+  --ok: #6fd39a; --ok-bg: #133524; --warn: #f0b85a; --warn-bg: #3a2b0f;
+  --bad: #ff8a80; --bad-bg: #3d1a18; --info: #9bb4ff; --info-bg: #1c2747;
+  color-scheme: dark;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: var(--step-0);
+  line-height: 1.65;
+}
+.wrap {
+  max-width: 980px;
+  margin: 0 auto;
+  padding-block: 40px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid;
+  gap: 40px;
+}
+h1, h2, h3 { text-wrap: balance; line-height: 1.3; margin: 0; }
+h1 { font-size: var(--step-3); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: var(--step-2); font-weight: 700; }
+h3 { font-size: var(--step-1); font-weight: 700; }
+p { margin: 0; max-width: 68ch; }
+code, pre, .mono { font-family: var(--font-mono); }
+code { font-size: 0.88em; background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 4px; }
+a { color: var(--accent); }
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--step--1);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+header.top { display: grid; gap: 14px; }
+.lede { color: var(--muted); font-size: var(--step-1); max-width: 62ch; }
+
+/* Test bench facts */
+.bench {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.bench div { padding: 12px 16px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); min-width: 0; }
+.bench dt { font-size: var(--step--1); color: var(--muted); margin: 0; }
+.bench dd { margin: 2px 0 0; font-weight: 500; }
+
+/* Summary verdict strip */
+.verdict {
+  display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline;
+  padding: 14px 18px;
+  border-left: 4px solid var(--ok);
+  background: var(--ok-bg);
+  border-radius: 0 8px 8px 0;
+}
+.verdict strong { color: var(--ok); font-size: var(--step-1); }
+.verdict span { color: var(--ink); }
+
+section { display: grid; gap: 16px; }
+.section-head { display: grid; gap: 6px; }
+.section-head p { color: var(--muted); }
+
+/* Error state ladder (TEC/REC thresholds) */
+.ladder { display: grid; gap: 8px; }
+.ladder-bar {
+  display: grid;
+  grid-template-columns: 96fr 32fr 128fr 56fr;
+  border-radius: 6px;
+  overflow: hidden;
+  font-size: var(--step--1);
+  font-weight: 600;
+  min-height: 44px;
+}
+.ladder-bar > div { display: flex; align-items: center; justify-content: center; padding: 6px 4px; text-align: center; line-height: 1.25; min-width: 0; }
+.seg-active { background: var(--ok-bg); color: var(--ok); }
+.seg-warning { background: var(--warn-bg); color: var(--warn); }
+.seg-passive { background: var(--bad-bg); color: var(--bad); }
+.seg-busoff { background: var(--bad); color: var(--surface); }
+:root[data-theme="dark"] .seg-busoff { color: var(--bg); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .seg-busoff { color: var(--bg); } }
+.ladder-scale {
+  display: grid;
+  grid-template-columns: 96fr 32fr 128fr 56fr;
+  font-family: var(--font-mono);
+  font-size: var(--step--1);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.ladder-note { color: var(--muted); font-size: var(--step--1); }
+
+/* Feature list */
+.features { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.feature { border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; background: var(--surface); display: grid; gap: 6px; align-content: start; min-width: 0; }
+.feature h3 { font-size: var(--step-0); }
+.feature p { color: var(--muted); font-size: var(--step--1); }
+
+/* Fault table */
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: var(--step--1); }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+
+/* Filter */
+.filters { display: flex; flex-wrap: wrap; gap: 8px; }
+.filters button {
+  font: inherit; font-size: var(--step--1);
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+.filters button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+:root[data-theme="dark"] .filters button[aria-pressed="true"] { color: var(--bg); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .filters button[aria-pressed="true"] { color: var(--bg); } }
+.filters button:focus-visible, .copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Scenario cards */
+.scenarios { display: grid; gap: 16px; }
+.sc {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  overflow: hidden;
+}
+.sc-head {
+  grid-column: 1 / -1;
+  display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.sc-id { font-family: var(--font-mono); font-weight: 600; color: var(--accent); font-size: var(--step--1); }
+.sc-head h3 { flex: 1 1 260px; min-width: 0; }
+.tag { font-size: var(--step--1); padding: 2px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
+.pill { font-size: var(--step--1); font-weight: 600; padding: 2px 10px; border-radius: 4px; white-space: nowrap; }
+.pill.ok { background: var(--ok-bg); color: var(--ok); }
+.pill.fail { background: var(--bad-bg); color: var(--bad); }
+.pill.note { background: var(--info-bg); color: var(--info); }
+
+.sc-cmd, .sc-res { padding: 14px 18px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+.sc-cmd { border-right: 1px solid var(--line); }
+.label { font-size: var(--step--1); color: var(--muted); letter-spacing: 0.04em; }
+.cmd-box { position: relative; min-width: 0; }
+pre {
+  margin: 0;
+  background: var(--code-bg);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  overflow-x: auto;
+  white-space: pre;
+}
+.cmd-box pre { padding-right: 64px; }
+.cmd-box pre .c { color: var(--muted); }
+.copy {
+  position: absolute; top: 6px; right: 6px;
+  font: inherit; font-size: 0.75rem;
+  padding: 2px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+.path { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-family: var(--font-mono); font-size: 0.75rem; }
+.st { padding: 1px 7px; border-radius: 3px; font-weight: 600; }
+.st.a { background: var(--ok-bg); color: var(--ok); }
+.st.w { background: var(--warn-bg); color: var(--warn); }
+.st.p { background: var(--bad-bg); color: var(--bad); }
+.st.b { background: var(--bad); color: var(--surface); }
+:root[data-theme="dark"] .st.b { color: var(--bg); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .st.b { color: var(--bg); } }
+.arrow { color: var(--muted); }
+.sc-res ul { margin: 0; padding-left: 1.1em; display: grid; gap: 4px; }
+.sc-res li { max-width: 60ch; }
+.log pre { font-size: 0.74rem; }
+
+/* Lists */
+.plain { margin: 0; padding-left: 1.1em; display: grid; gap: 6px; }
+.plain li { max-width: 70ch; }
+.callout { border-left: 4px solid var(--warn); background: var(--warn-bg); padding: 12px 16px; border-radius: 0 8px 8px 0; display: grid; gap: 6px; }
+
+footer { color: var(--muted); font-size: var(--step--1); border-top: 1px solid var(--line); padding-top: 16px; }
+
+@media (max-width: 720px) {
+  .sc { grid-template-columns: minmax(0, 1fr); }
+  .sc-cmd { border-right: 0; border-bottom: 1px solid var(--line); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .sc { transition: opacity 0.15s ease; }
+}
+</style>
+
+<div class="wrap">
+
+  <header class="top">
+    <div class="eyebrow">TWAI-FD · ISO 11898-1 에러 처리 시험</div>
+    <h1>ESP32-S31 CAN-FD 버스 에러 시험</h1>
+    <p class="lede">CAN1과 CAN2를 한 버스에 묶고 에러 상황을 하나씩 만들었다. 시나리오마다 재현 명령과 보드에서 관찰한 결과를 정리했다.</p>
+    <dl class="bench">
+      <div><dt>보드</dt><dd>ESP32-S31-Function-CoreBoard-1</dd></div>
+      <div><dt>SDK</dt><dd>ESP-IDF v6.1 (esp_driver_twai)</dd></div>
+      <div><dt>CAN1 / CAN2</dt><dd class="mono">GPIO35/36 · GPIO37/38</dd></div>
+      <div><dt>버스</dt><dd>CAN-FD 트랜시버 2개, 120 Ω 종단 2개</dd></div>
+      <div><dt>기본 설정</dt><dd>공칭 500 kbps, 데이터 2 Mbps</dd></div>
+      <div><dt>콘솔</dt><dd>USB Serial/JTAG (COM23), uart MCP</dd></div>
+      <div><dt>시험일</dt><dd class="mono">2026-10-26</dd></div>
+    </dl>
+  </header>
+
+  <div class="verdict" role="status">
+    <strong>16개 시나리오 모두 예상대로 동작</strong>
+    <span>에러 카운터, 상태 전이, 버스 오프 복구가 규격과 맞았다. 시험 중 찾은 펌웨어 문제 1건은 고쳤다.</span>
+  </div>
+
+  <section aria-labelledby="ladder-h">
+    <div class="section-head">
+      <h2 id="ladder-h">에러 상태와 카운터 기준</h2>
+      <p>결과를 읽을 때 쓰는 기준이다. 상태는 TEC와 REC 중 큰 값으로 정해지고, BUS_OFF는 TEC로만 들어간다.</p>
+    </div>
+    <div class="ladder">
+      <div class="ladder-bar" role="img" aria-label="TEC/REC 0에서 95는 ERROR_ACTIVE, 96에서 127은 ERROR_WARNING, 128에서 255는 ERROR_PASSIVE, TEC 256 이상은 BUS_OFF">
+        <div class="seg-active">ERROR_ACTIVE</div>
+        <div class="seg-warning">WARNING</div>
+        <div class="seg-passive">ERROR_PASSIVE</div>
+        <div class="seg-busoff">BUS_OFF</div>
+      </div>
+      <div class="ladder-scale" aria-hidden="true">
+        <span>0</span><span>96</span><span>128</span><span>256 (TEC)</span>
+      </div>
+      <p class="ladder-note">송신 에러는 TEC +8, 수신 에러는 REC +1(에러 플래그 뒤 우성이면 +8)이다. 성공하면 1씩 내려간다. ERROR_PASSIVE 상태의 송신 노드는 ACK 에러로 TEC가 오르지 않는다.</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="fw-h">
+    <div class="section-head">
+      <h2 id="fw-h">펌웨어에 넣은 에러 처리</h2>
+      <p>시나리오를 만들고 결과를 보기 위해 추가한 기능이다. 코드는 <code>main/canfd_port.c</code>와 <code>main/cmd_canfd.c</code>에 있다.</p>
+    </div>
+    <div class="features">
+      <div class="feature"><h3>에러 요약 로그</h3><p>에러가 나는 동안 포트마다 500 ms에 한 줄을 출력한다. 종류별 증가분, tx_fail, 상태, TEC/REC가 들어간다. <code>can_errlog off</code>로 끈다.</p></div>
+      <div class="feature"><h3>상태 전이 로그</h3><p>WARNING, PASSIVE, BUS_OFF로 바뀌면 경고로, ACTIVE로 돌아오면 정보 로그로 출력한다.</p></div>
+      <div class="feature"><h3>자동 버스 오프 복구</h3><p><code>can_init &lt;port&gt; -a &lt;ms&gt;</code>로 켠다. 버스 오프 뒤 지정 시간이 지나면 복구를 시작한다. 기본값은 0(수동)이다.</p></div>
+      <div class="feature"><h3>고장 주입</h3><p><code>can_fault</code>로 TX 핀을 우성이나 열성으로 고정한다. 고장 노드와 TX 단선을 흉내 낸다.</p></div>
+      <div class="feature"><h3>통계 확장</h3><p><code>can_status</code>에 err_passive, bus_off, recover 횟수와 주입한 고장을 표시한다.</p></div>
+      <div class="feature"><h3>송신 결과 보고 (수정)</h3><p><code>can_send</code>가 큐에 넣은 수, 실제로 보낸 수, 실패한 수를 출력한다. 버스 오프이면 복구 방법을 안내한다.</p></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="fault-h">
+    <div class="section-head">
+      <h2 id="fault-h">고장 주입 명령</h2>
+      <p>TX 핀을 컨트롤러에서 떼어 GPIO로 고정한다. 닫힌 포트에도 걸 수 있고, <code>can_init</code>으로 포트를 다시 열면 풀린다.</p>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>명령</th><th>핀 상태</th><th>흉내 내는 고장</th></tr></thead>
+        <tbody>
+          <tr><td><code>can_fault &lt;port&gt; dominant</code></td><td>TX Low 고정</td><td>노드가 버스를 우성으로 붙잡음</td></tr>
+          <tr><td><code>can_fault &lt;port&gt; recessive</code></td><td>TX High 고정</td><td>TX 선 단선, 노드가 버스를 구동하지 못함</td></tr>
+          <tr><td><code>can_fault &lt;port&gt; off</code></td><td>컨트롤러에 반환</td><td>정상</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="sc-h">
+    <div class="section-head">
+      <h2 id="sc-h">시나리오별 재현 명령과 결과</h2>
+      <p>시나리오는 실제 시험 순서대로 놓았다. 앞 시나리오의 상태를 이어받는 경우가 있으니 처음부터 따라 하려면 위에서부터 실행한다.</p>
+    </div>
+    <div class="filters" role="group" aria-label="분류로 걸러 보기">
+      <button type="button" id="f-all" data-f="all" aria-pressed="true">전체</button>
+      <button type="button" id="f-ack" data-f="ack" aria-pressed="false">ACK·재전송</button>
+      <button type="button" id="f-rate" data-f="rate" aria-pressed="false">비트레이트</button>
+      <button type="button" id="f-busoff" data-f="busoff" aria-pressed="false">고착·버스 오프</button>
+      <button type="button" id="f-recover" data-f="recover" aria-pressed="false">복구</button>
+    </div>
+
+    <div class="scenarios">
+
+      <!-- S01 -->
+      <article class="sc" data-cat="ack">
+        <div class="sc-head"><span class="sc-id">S01</span><h3>상대 노드 없음 (ACK 에러)</h3><span class="tag">ACK·재전송</span><span class="pill ok">규격대로</span></div>
+        <div class="sc-cmd">
+          <div class="label">재현 명령</div>
+          <div class="cmd-box"><pre>can_init all
+can_deinit 2
+can_send 1 123 11223344
+can_status 1</pre><button type="button" class="copy">복사</button></div>
+        </div>
+        <div class="sc-res">
+          <div class="label">관찰 결과</div>
+          <div class="path"><span class="st a">ACTIVE</span><span class="arrow">→</span><span class="st w">WARNING</span><span class="arrow">→</span><span class="st p">PASSIVE</span></div>
+          <ul>
+            <li>ACK 에러 12번 뒤 TEC 96으로 WARNING이 됐다.</li>
+            <li>TEC 128에서 PASSIVE가 됐고, 그 뒤로는 TEC가 128에 머물렀다.</li>
+            <li>프레임은 초당 약 5300번 재전송됐다(재전송 한도 -1).</li>
+          </ul>
+          <div class="log"><pre>W CAN1 bus errors +12 (ack 12)  ERROR_WARNING TEC=96 REC=0
+W CAN1 state: ERROR_ACTIVE -> ERROR_WARNING
+W CAN1 bus errors +7 (ack 7)  ERROR_PASSIVE TEC=128 REC=0
+W CAN1 state: ERROR_WARNING -> ERROR_PASSIVE
+W CAN1 bus errors +2660 (ack 2660)  ERROR_PASSIVE TEC=128 REC=0</pre></div>
+        </div>
+      </article>
+
+      <!-- S02 -->
+      <article class="sc" data-cat="recover ack">
+        <div class="sc-head"><span class="sc-id">S02</span><h3>상대 노드 복귀</h3><span class="tag">복구</span><span class="pill ok">규격대로</span></div>
+        <div class="sc-cmd">
+          <div class="label">재현 명령 (S01에 이어서)</div>
+          <div class="cmd-box"><pre>can_init 2
+can_status 1
+can_send 1 123 11223344 -n 40</pre><button type="button" class="copy">복사</button></div>
+        </div>
+        <div class="sc-res">
+          <div class="label">관찰 결과</div>
+          <div class="path"><span class="st p">PASSIVE</span><span class="arrow">→</span><span class="st w">WARNING</span><span class="arrow">→</span><span class="st a">ACTIVE</span></div>
+          <ul>
+            <li>CAN2가 켜지자 대기 프레임이 전달되고 TEC가 127로 내려갔다.</li>
+            <li>정상 프레임 40개를 보내는 동안 TEC가 96 아래로 내려가 ACTIVE가 됐다.</li>
+          </ul>
+          <div class="log"><pre>W CAN1 state: ERROR_PASSIVE -> ERROR_WARNING
+state=ERROR_WARNING  TEC=127  REC=0
+I CAN1 state: ERROR_WARNING -> ERROR_ACTIVE</pre></div>
+        </div>
+      </article>
+
+      <!-- S03 -->
+      <article class="sc" data-cat="ack">
+        <div class="sc-head"><span class="sc-id">S03</span><h3>재전송 한도 3회</h3><span class="tag">ACK·재전송</span><span class="pill ok">정상 동작</span></div>
+        <div class="sc-cmd">
+          <div class="label">재현 명령</div>
+          <div class="cmd-box"><pre>can_init 1 -r 3
+can_deinit 2
+can_send 1 123 11223344 -n 3
+can_status 1</pre><button type="button" class="copy">복사</button></div>
+        </div>
+        <div class="sc-res">
+          <div class="label">관찰 결과</div>
+          <div class="path"><span class="st a">ACTIVE</span><span class="arrow">→</span><span class="st w">WARNING</span></div>
+          <ul>
+            <li>프레임마다 4번(최초 1번 + 재전송 3번) 시도한 뒤 버렸다.</li>
+            <li>ACK 에러 12번, tx_fail 3, TEC 96이었다.</li>
+            <li>이때 <code>can_send</code>가 실패한 프레임도 "sent"로 보고했다. 이 문제는 고쳤다(S16).</li>
+          </ul>
+          <div class="log"><pre>W CAN1 bus errors +12 (ack 12)  tx_fail +3  ERROR_WARNING TEC=96 REC=0
+tx_ok=0  tx_fail=3  rx=0  rx_drop=0</pre></div>
+        </div>
+      </article>
+
+      <!-- S04 -->
+      <article class="sc" data-cat="ack">
+        <div class="sc-head"><span class="sc-id">S04</span><h3>단발 송신 (재전송 없음)</h3><span class="tag">ACK·재전송</span><span class="pill ok">정상 동작</span></div>
+        <div class="sc-cmd">
+          <div class="label">재현 명령</div>
+          <div class="cmd-box"><pre>can_init 1 -r 0
+can_deinit 2
+can_send 1 123 11223344 -n 2</pre><button type="button" class="copy">복사</button></div>
+        </div>
+        <div class="sc-res">
+          <div class="label">관찰 결과</div>
+          <ul>
+            <li>프레임마다 ACK 에러 1번 뒤 바로 버렸다.</li>
+            <li>TEC는 프레임당 8씩 올라 16이 됐다.</li>
+          </ul>
+          <div class="log"><pre>CAN1: queued 2, sent 0, failed 2  (ERROR_ACTIVE TEC=16 REC=0)</pre></div>
+        </div>
+      </article>
+
+      <!-- S05 -->
+      <article class="sc" data-cat="ack">
+        <div class="sc-head"><span class="sc-id">S05</span><h3>상대 노드가 listen-only</h3><span class="tag">ACK·재전송</span><span class="pill ok">규격대로</span></div>
+        <div class="sc-cmd">
+          <div class="label">재현 명령</div>
+          <div class="cmd-box"><pre>can_init 2 -m listen
+can_init 1 -r 0
+can_dump 2 on
+can_send 1 123 11223344
+can_status</pre><button type="button" class="copy">복사</button></div>
+        </div>
+        <div class="sc-res">
+          <div class="label">관찰 결과</div>
+          <ul>
+            <li>listen-only 노드는 ACK를 주지 않아 CAN1에 ACK 에러가 났다.</li>
+            <li>CAN2는 CAN1의 에러 플래그를 form 에러로 감지했다.</li>
+            <li>무효가 된 프레임이라 CAN2는 받지 않았다(rx=0, dump 출력 없음).</li>
+          </ul>
+          <div class="log"><pre>CAN1  state=ERROR_ACTIVE  TEC=8  REC=0   tx_fail=1  ack=1
+CAN2  state=ERROR_ACTIVE  TEC=0  REC=0   rx=0  form=1</pre></div>
+        </div>
+      </article>
+
+      <!-- S06 -->
+      <article class="sc" data-cat="rate">
+        <div class="sc-head"><span class="sc-id">S06</span><h3>공칭 비트레이트 불일치 (500k와 250k)</h3><span class="tag">비트레이트</span><span class="pill ok">예상대로</span></div>
+        <div class="sc-cmd">
+          <div class="label">재현 명령</div>
+          <div class="cmd-box"><pre>can_init 1
+can_init 2 -b 250000 -d 1000000
+can_send 1 123 11223344</pre><button type="button" class="copy">복사</button></div>
+        </div>
+        <div class="sc-res">
+          <div class="label">관찰 결과</div>
+          <div class="path"><span class="mono">CAN1, CAN2:</span><span class="st a">ACTIVE</span><span class="arrow">→</span><span class="st w">WARNING</span><span class="arrow">→</span><span class="st p">PASSIVE</span></div>
+          <ul>
+            <li>CAN1은 stuff 에러, CAN2는 form/stuff 에러를 냈다.</li>
+            <li>두 노드 모두 REC가 511까지 올라 PASSIVE가 됐다.</li>
+            <li>그 뒤 CAN1은 ACK 에러로 재전송을 계속했고, 버스 오프는 나지 않았다.</li>
+          </ul>
+          <div class="log"><pre>W CAN1 bus errors +32 (stuff 32)  ERROR_PASSIVE TEC=16 REC=387
+W CAN2 bus errors +96 (form 96)  ERROR_WARNING TEC=0 REC=96
+W CAN2 state: ERROR_WARNING -> ERROR_PASSIVE
+W CAN1 bus errors +2660 (ack 2660)  ERROR_PASSIVE TEC=16 REC=511
+W CAN2 bus errors +2659 (form 1330 stuff 1329)  ERROR_PASSIVE TEC=0 REC=511</pre></div>
+        </div>
+      </article>
+
+      <!-- S07 -->
+      <article class="sc" data-cat="rate recover">
+        <div class="sc-head"><span class="sc-id">S07</span><h3>비트레이트 불일치 해소</h3><span class="tag">복구</span><span class="pill note">REC 주의</span></div>
+        <div class="sc-cmd">
+          <div class="label">재현 명령 (S06에 이어서)</div>
+          <div class="cmd-box"><pre>can_init 2
+can_send 1 123 11223344 -n 140
+can_status
+can_send 2 456 55667788 -n 40
+can_status 1</pre><button type="button" class="copy">복사</button></div>
+        </div>
+        <div class="sc-res">
+          <div class="label">관찰 결과</div>
+          <div class="path"><span class="mono">CAN1:</span><span class="st p">PASSIVE</span><span class="arrow">→</span><span class="st w">WARNING</span><span class="arrow">→</span><span class="st a">ACTIVE</span></div>
+          <ul>
+            <li>대기 프레임과 140개가 모두 전달됐고 CAN1의 TEC는 0이 됐다.</li>
+            <li>그래도 CAN1은 REC 511 때문에 PASSIVE에 머물렀다.</li>
+            <li>CAN2가 보낸 40개를 받은 뒤 REC 81, ACTIVE가 됐다.</li>
+          </ul>
+          <div class="log"><pre>CAN1  state=ERROR_PASSIVE  TEC=0  REC=511  tx_ok=141
+W CAN1 state: ERROR_PASSIVE -> ERROR_WARNING
+I CAN1 state: ERROR_WARNING -> ERROR_ACTIVE
+CAN1  state=ERROR_ACTIVE  TEC=0  REC=81  rx=40</pre></div>
+        </div>
+      </article>
+
+      <!-- S08 -->
+      <article class="sc" data-cat="rate">
+        <div class="sc-head"><span class="sc-id">S08</span><h3>데이터 비트레이트 불일치 (2M와 1M)</h3><span class="tag">비트레이트</span><span class="pill ok">예상대로</span></div>
+        <div class="sc-cmd">
+          <div class="label">재현 명령</div>
+          <div class="cmd-box"><pre>can_init 1 -r 0
+can_init 2 -d 1000000
+can_send 1 100 -b -l 64 -n 5
+can_status
+can_test -D 12 -n 200 --nobrs</pre><button type="button" class="copy">복사</button></div>
+        </div>
+        <div class="sc-res">
+          <div class="label">관찰 결과</div>
+          <ul>
+            <li>BRS 프레임 5개가 모두 실패했다.</li>
+            <li>CAN1은 bit 에러(TEC 40), CAN2는 데이터 구간 stuff 에러(REC 45)를 냈다.</li>
+            <li>공칭 속도만 쓰는 BRS 없는 FD 프레임 200개는 PASS였다.</li>
+          </ul>
+          <div class="log"><pre>CAN1  TEC=40  REC=0   tx_fail=5  bit=5
+CAN2  TEC=0   REC=45  rx=0      stuff=5
+--- CAN1 -> CAN2 : FD, 64 bytes, 200 frames ---  Result : PASS</pre></div>
+        </div>
+      </article>
+
+      <!-- S09 -->
+      <article class="sc" data-cat="rate">
+        <div class="sc-head"><span class="sc-id">S09</span><h3>TDC 설정 없이 데이터 5/8 Mbps</h3><span class="tag">비트레이트</span><span class="pill note">재현 불가</span></div>
+        <div class="sc-cmd">
+          <div class="label">재현 명령</div>
+          <div class="cmd-box"><pre>can_init all -b 1000000 -d 5000000 -r 0
+can_test -D 12 -n 200 -t 2000
+can_init all -b 1000000 -d 8000000 -r 0
+can_test -D 12 -n 200 -t 2000</pre><button type="button" class="copy">복사</button></div>
+        </div>
+        <div class="sc-res">
+          <div class="label">관찰 결과</div>
+          <ul>
+            <li>5 Mbps(6629 frames/s)와 8 Mbps(9268 frames/s) 모두 PASS였다.</li>
+            <li>SSP 레지스터의 리셋 기본값이 "측정한 송신 지연 + 10클럭"이라 TDC가 이미 켜져 있었다.</li>
+            <li>드라이버에는 TDC를 끄는 경로가 없어 "TDC 없음" 실패는 만들 수 없었다.</li>
+          </ul>
+          <div class="log"><pre>trv_delay_ssp_cfg: ssp_src = 0 (measured delay + offset), ssp_offset = 10</pre></div>
+        </div>
+      </article>
+
+      <!-- S10 -->
+      <article class="sc" data-cat="busoff">
+        <div class="sc-head"><span class="sc-id">S10</span><h3>버스 우성 고착 (유휴 중)</h3><span class="tag">고착·버스 오프</span><span class="pill note">트랜시버 보호</span></div>
+        <div class="sc-cmd">
+          <div class="label">재현 명령</div>
+          <div class="cmd-box"><pre>can_init all
+can_fault 2 dominant
+can_send 1 123 11223344
+can_status
+can_fault 2 off</pre><button type="button" class="copy">복사</button></div>
+        </div>
+        <div class="sc-res">
+          <div class="label">관찰 결과</div>
+          <div class="path"><span class="mono">CAN1, CAN2:</span><span class="st a">ACTIVE</span><span class="arrow">→</span><span class="st w">WARNING</span><span class="arrow">→</span><span class="st p">PASSIVE</span></div>
+          <ul>
+            <li>처음 수 ms 동안 버스가 우성이 되어 두 노드의 REC가 올랐다.</li>
+            <li>그 뒤 트랜시버의 TXD 우성 타임아웃이 송신부를 꺼서 버스가 풀렸다.</li>
+            <li>CAN2는 ACK를 줄 수 없게 됐다. CAN1은 ack 에러, CAN2는 bit 에러를 냈다.</li>
+            <li>고장을 풀자 대기 프레임이 전달됐다(tx_ok=1).</li>
+          </ul>
+          <div class="log"><pre>W CAN2 bus errors +1 (stuff 1)  ERROR_WARNING TEC=0 REC=121
+W CAN1 bus errors +1 (stuff 1)  ERROR_PASSIVE TEC=0 REC=145
+W CAN1 bus errors +2421 (ack 2421)  ERROR_PASSIVE TEC=0 REC=511
+W CAN2 bus errors +2432 (bit 2432)  ERROR_PASSIVE TEC=0 REC=511</pre></div>
+        </div>
+      </article>
+
+      <!-- S11 -->
+      <article class="sc" data-cat="busoff">
+        <div class="sc-head"><span class="sc-id">S11</span><h3>송신 중 버스 우성 → 버스 오프</h3><span class="tag">고착·버스 오프</span><span class="pill ok">규격대로</span></div>
+        <div class="sc-cmd">
+          <div class="label">재현 명령</div>
+          <div class="cmd-box"><pre>can_deinit 2
+can_errlog off
+can_send 1 123 11223344   <span class="c"># ACK 에러로 재전송 중</span>
+can_fault 2 dominant      <span class="c"># 닫힌 CAN2 핀으로 우성 주입</span>
+can_status 1</pre><button type="button" class="copy">복사</button></div>
+        </div>
+        <div class="sc-res">
+          <div class="label">관찰 결과</div>
+          <div class="path"><span class="st p">PASSIVE</span><span class="arrow">→</span><span class="st b">BUS_OFF</span></div>
+          <ul>
+            <li>송신 중인 CAN1이 bit 에러를 감지했다.</li>
+            <li>우성이 이어지는 동안 TEC가 8씩 올라 256에서 BUS_OFF가 됐다.</li>
+            <li>송신 중이던 프레임은 실패로 돌아왔다(tx_fail 1).</li>
+          </ul>
+          <div class="log"><pre>W CAN1 state: ERROR_PASSIVE -> BUS_OFF
+state=BUS_OFF  TEC=256  REC=511
+tx_ok=1  tx_fail=1   bit=1   bus_off=1</pre></div>
+        </div>
+      </article>
+
+      <!-- S12 -->
+      <article class="sc" data-cat="busoff recover">
+        <div class="sc-head"><span class="sc-id">S12</span><h3>버스 오프 중 송신과 수동 복구</h3><span class="tag">복구</span><span class="pill ok">정상 동작</span></div>
+        <div class="sc-cmd">
+          <div class="label">재현 명령 (S11에 이어서)</div>
+          <div class="cmd-box"><pre>can_send 1 123 11223344
+can_recover 1
+can_fault 2 off
+can_init 2
+can_test -n 200</pre><button type="button" class="copy">복사</button></div>
+        </div>
+        <div class="sc-res">
+          <div class="label">관찰 결과</div>
+          <div class="path"><span class="st b">BUS_OFF</span><span class="arrow">→</span><span class="st a">ACTIVE</span></div>
+          <ul>
+            <li>버스 오프 중 송신은 <code>ESP_ERR_INVALID_STATE</code>로 거부됐다.</li>
+            <li><code>can_recover</code> 직후 ACTIVE가 됐고 TEC와 REC가 0으로 초기화됐다.</li>
+            <li>CAN2를 다시 연 뒤 양방향 200개가 PASS였다.</li>
+          </ul>
+          <div class="log"><pre>E esp_twai: _node_queue_tx(608): node is bus off
+CAN1 send #1 failed: ESP_ERR_INVALID_STATE
+I CAN1 state: BUS_OFF -> ERROR_ACTIVE
+CAN1 recover: done
+=== can_test both: PASS ===</pre></div>
+        </div>
+      </article>
+
+      <!-- S13 -->
+      <article class="sc" data-cat="busoff recover">
+        <div class="sc-head"><span class="sc-id">S13</span><h3>TX 선 단선과 자동 복구</h3><span class="tag">고착·버스 오프</span><span class="pill ok">정상 동작</span></div>
+        <div class="sc-cmd">
+          <div class="label">재현 명령</div>
+          <div class="cmd-box"><pre>can_init 1 -a 200
+can_errlog on
+can_fault 1 recessive
+can_send 1 123 11223344 -n 3 -p 300
+can_status 1</pre><button type="button" class="copy">복사</button></div>
+        </div>
+        <div class="sc-res">
+          <div class="label">관찰 결과</div>
+          <div class="path"><span class="st a">ACTIVE</span><span class="arrow">→</span><span class="st w">WARNING</span><span class="arrow">→</span><span class="st p">PASSIVE</span><span class="arrow">→</span><span class="st b">BUS_OFF</span><span class="arrow">→</span><span class="st a">ACTIVE</span><span class="arrow">× 3</span></div>
+          <ul>
+            <li>SOF를 우성으로 보내도 버스가 열성이라 bit 에러가 났다.</li>
+            <li>프레임마다 약 2 ms 안에 BUS_OFF가 됐다.</li>
+            <li>200 ms 뒤 자동 복구로 ACTIVE에 돌아오는 주기가 3번 반복됐다.</li>
+          </ul>
+          <div class="log"><pre>W CAN1 bus errors +9 (bit 9)  ERROR_PASSIVE TEC=136 REC=0
+W CAN1 bus errors +15 (form 15)  tx_fail +1  BUS_OFF TEC=256 REC=0
+W CAN1 state: ERROR_PASSIVE -> BUS_OFF
+I CAN1: automatic bus-off recovery started
+I CAN1 state: BUS_OFF -> ERROR_ACTIVE
+tx_fail=3  err_passive=3  bus_off=3  recover=3  fault=recessive</pre></div>
+        </div>
+      </article>
+
+      <!-- S14 -->
+      <article class="sc" data-cat="busoff">
+        <div class="sc-head"><span class="sc-id">S14</span><h3>고장 중 can_test</h3><span class="tag">고착·버스 오프</span><span class="pill fail">FAIL (예상대로)</span></div>
+        <div class="sc-cmd">
+          <div class="label">재현 명령 (S13에 이어서)</div>
+          <div class="cmd-box"><pre>can_test -D 12 -n 50</pre><button type="button" class="copy">복사</button></div>
+        </div>
+        <div class="sc-res">
+          <div class="label">관찰 결과</div>
+          <ul>
+            <li>시험이 멈추지 않고 FAIL로 끝났다.</li>
+            <li>버스 오프 6번, 자동 복구 5번, 송신 실패 21개를 보고했다.</li>
+            <li>버스 오프 때 하드웨어 버퍼의 프레임이 4개씩 실패로 돌아왔다.</li>
+          </ul>
+          <div class="log"><pre>TX queued   : 21  (tx_ok 0, tx_fail 21)  error: ESP_ERR_INVALID_STATE
+RX lost     : 50
+Result      : FAIL
+CAN1: bus_err +110 (bit 20 form 90)  BUS_OFF TEC=256 REC=0
+      err_passive +6  bus_off +6  recover +5</pre></div>
+        </div>
+      </article>
+
+      <!-- S15 -->
+      <article class="sc" data-cat="recover">
+        <div class="sc-head"><span class="sc-id">S15</span><h3>고장 해제 뒤 정상 복귀</h3><span class="tag">복구</span><span class="pill ok">PASS</span></div>
+        <div class="sc-cmd">
+          <div class="label">재현 명령 (S14에 이어서)</div>
+          <div class="cmd-box"><pre>can_fault 1 off
+can_test -n 500</pre><button type="button" class="copy">복사</button></div>
+        </div>
+        <div class="sc-res">
+          <div class="label">관찰 결과</div>
+          <ul>
+            <li>양방향 500개씩 모두 PASS였다(약 2834 frames/s).</li>
+            <li>버스 오프를 여러 번 겪었지만 TX 슬롯 누수는 없었다.</li>
+          </ul>
+          <div class="log"><pre>--- CAN1 -> CAN2 : 500 frames ---  tx_ok 500, RX ok 500, PASS
+--- CAN2 -> CAN1 : 500 frames ---  tx_ok 500, RX ok 500, PASS
+=== can_test both: PASS ===</pre></div>
+        </div>
+      </article>
+
+      <!-- S16 -->
+      <article class="sc" data-cat="busoff recover">
+        <div class="sc-head"><span class="sc-id">S16</span><h3>버스 오프 안내 (수정한 can_send)</h3><span class="tag">복구</span><span class="pill ok">수정 확인</span></div>
+        <div class="sc-cmd">
+          <div class="label">재현 명령</div>
+          <div class="cmd-box"><pre>can_init 1
+can_fault 1 recessive
+can_send 1 123 11223344
+can_fault 1 off
+can_recover 1</pre><button type="button" class="copy">복사</button></div>
+        </div>
+        <div class="sc-res">
+          <div class="label">관찰 결과</div>
+          <ul>
+            <li>실제로 보낸 수와 실패한 수, 현재 상태를 출력했다.</li>
+            <li>버스 오프 상태라서 복구 방법을 함께 안내했다.</li>
+          </ul>
+          <div class="log"><pre>CAN1: queued 1, sent 0, failed 1  (BUS_OFF TEC=256 REC=0)
+      CAN1 is bus-off: run 'can_recover 1' or enable auto recovery (can_init 1 -a &lt;ms&gt;)</pre></div>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <section aria-labelledby="notes-h">
+    <div class="section-head"><h2 id="notes-h">시험에서 확인한 점</h2></div>
+    <ul class="plain">
+      <li>트랜시버의 TXD 우성 타임아웃 때문에 노드 쪽 고장으로는 버스를 계속 우성으로 묶을 수 없다.</li>
+      <li>송신 노드의 버스 오프는 노드가 송신하는 중에 우성을 걸거나, TX 선을 끊어서 재현했다.</li>
+      <li>REC는 수신에 성공해야만 내려간다. 송신만 하는 노드는 REC 때문에 PASSIVE에 오래 머물 수 있다.</li>
+      <li>공칭 속도가 달라도 버스 오프까지는 가지 않았다. 두 노드 모두 PASSIVE에서 머물렀다.</li>
+      <li>TDC는 리셋 기본값으로 켜져 있다. <code>--dssp</code>는 보조 샘플 포인트 위치를 직접 정할 때만 쓴다.</li>
+      <li>재전송 한도 -1에서는 ACK가 없는 프레임이 계속 재전송된다. <code>can_init</code>으로 포트를 다시 열어야 비워진다.</li>
+    </ul>
+  </section>
+
+  <div class="callout">
+    <h3>시험하지 못한 항목</h3>
+    <p>CANH-CANL 단락, CANH-GND 단락, 종단 저항 제거처럼 버스 자체에 생기는 고장은 펌웨어로 만들 수 없다. 배선을 바꾼 뒤 같은 명령(<code>can_status</code>, <code>can_send</code>, <code>can_test</code>)으로 이어서 시험한다.</p>
+  </div>
+
+  <footer>
+    ESP32-S31 CAN-FD 2포트 테스트 펌웨어 · 시험 로그는 uart MCP(COM23)로 받은 콘솔 출력에서 발췌했다. 로그의 타임스탬프와 태그(<code>canfd_port:</code>)는 줄였다.
+  </footer>
+</div>
+
+<script>
+(function () {
+  var buttons = document.querySelectorAll('.filters button');
+  var cards = document.querySelectorAll('.sc');
+  function apply(f) {
+    buttons.forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.f === f)); });
+    cards.forEach(function (c) {
+      var cats = (c.dataset.cat || '').split(' ');
+      c.hidden = !(f === 'all' || cats.indexOf(f) !== -1);
+    });
+  }
+  buttons.forEach(function (b) { b.addEventListener('click', function () { apply(b.dataset.f); }); });
+
+  document.querySelectorAll('.copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var pre = btn.parentElement.querySelector('pre');
+      var text = Array.prototype.map.call(pre.childNodes, function (n) {
+        return (n.nodeType === 1 && n.classList.contains('c')) ? '' : n.textContent;
+      }).join('').replace(/[ \t]+$/gm, '');
+      function done(msg) { btn.textContent = msg; setTimeout(function () { btn.textContent = '복사'; }, 1500); }
+      function fallback() {
+        var r = document.createRange(); r.selectNodeContents(pre);
+        var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+        done('선택됨');
+      }
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(function () { done('복사됨'); }, fallback);
+        } else { fallback(); }
+      } catch (e) { fallback(); }
+    });
+  });
+})();
+</script>

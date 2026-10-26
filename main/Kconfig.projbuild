@@ -1,0 +1,72 @@
+menu "CAN-FD 2-Port Test Configuration"
+
+    config CANFD_PORT1_TX_GPIO
+        int "CAN1 TX GPIO"
+        range 0 61
+        default 35
+
+    config CANFD_PORT1_RX_GPIO
+        int "CAN1 RX GPIO"
+        range 0 61
+        default 36
+
+    config CANFD_PORT2_TX_GPIO
+        int "CAN2 TX GPIO"
+        range 0 61
+        default 37
+
+    config CANFD_PORT2_RX_GPIO
+        int "CAN2 RX GPIO"
+        range 0 61
+        default 38
+
+    config CANFD_DEFAULT_NOMINAL_BITRATE
+        int "Default nominal (arbitration) bitrate [bps]"
+        default 500000
+
+    config CANFD_DEFAULT_DATA_BITRATE
+        int "Default data-phase bitrate [bps], 0 = classic CAN only"
+        default 2000000
+
+    config CANFD_DEFAULT_NOMINAL_SP_PERMILL
+        int "Default nominal sample point [permill], 0 = driver default"
+        range 0 999
+        default 0
+
+    config CANFD_DEFAULT_DATA_SP_PERMILL
+        int "Default data-phase sample point [permill], 0 = driver default"
+        range 0 999
+        default 0
+
+    config CANFD_DEFAULT_DATA_SSP_PERMILL
+        int "Default data-phase secondary sample point [permill], 0 = disabled"
+        range 0 999
+        default 0
+        help
+            Secondary sample point offset (transmitter delay compensation).
+            With 0 the hardware reset value stays active: measured delay + 10 clock cycles,
+            which passed up to 8 Mbps on the test bench. Set it only to move the SSP explicitly.
+
+    config CANFD_DEFAULT_AUTO_RECOVER_MS
+        int "Default automatic bus-off recovery delay [ms], 0 = manual only"
+        range 0 60000
+        default 0
+        help
+            When a port goes bus-off, start the recovery sequence after this delay.
+            0 disables automatic recovery; use the can_recover command instead.
+
+    config CANFD_TX_QUEUE_DEPTH
+        int "Driver TX queue depth per port"
+        range 1 64
+        default 16
+
+    config CANFD_RX_QUEUE_DEPTH
+        int "Application RX queue depth per port"
+        range 8 512
+        default 128
+
+    config CANFD_AUTO_INIT
+        bool "Initialize both ports with default settings at boot"
+        default y
+
+endmenu
