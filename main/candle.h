@@ -1,7 +1,9 @@
 /*
  * Candlelight / ElmueSoft CANable 2.5 protocol on top of canfd_port.
  *
- * CAN1 = channel 0 = USB interface 0, CAN2 = channel 1 = USB interface 1.
+ * CAN1 = channel 0 = USB interface 0, CAN2 = channel 1 = USB interface 2 (interface 1 is the
+ * firmware update interface, as in the CANable 2.5 firmware). The 'itf' arguments below are the
+ * TinyUSB vendor instance numbers: 0 = CAN1, 1 = CAN2.
  * Legacy protocol: all channels use interface 0 (kHostFrameLegacy.channel selects the channel).
  * ElmueSoft protocol: each channel uses its own interface.
  */

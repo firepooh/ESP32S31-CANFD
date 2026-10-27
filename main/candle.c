@@ -848,6 +848,7 @@ static bool control_setup(uint8_t rhport, const tusb_control_request_t *req)
     static union {
         kErrorState err_state;
         uint32_t u32;
+        uint16_t u16;
         uint8_t u8;
     } resp;
 
@@ -866,7 +867,9 @@ static bool control_setup(uint8_t rhport, const tusb_control_request_t *req)
     case GS_ReqGetDeviceVersion:
     case GS_ReqGetTimestamp:
     case ELM_ReqGetBoardInfo:
-        // per-device requests: wValue is ignored (Linux sends 1)
+    case ELM_ReqGetPinStatus:
+    case ELM_ReqSetPinStatus:
+        // per-device requests: wValue is ignored (Linux sends 1) or is a pin ID
         ch = req->wValue < CANDLE_CHANNEL_COUNT ? req->wValue : CANDLE_CHANNEL_COUNT - 1;
         break;
     default:
@@ -946,8 +949,17 @@ static bool control_setup(uint8_t rhport, const tusb_control_request_t *req)
         src = &s_board;
         len = sizeof(s_board);
         break;
-    case GS_ReqGetTermination:
     case ELM_ReqGetPinStatus:
+        // wValue is the pin: the ESP32 boot strapping pin cannot be disabled like the STM32 BOOT0 option
+        if (req->wValue != PINID_BOOT0) {
+            s_last_error = FBK_InvalidParameter;
+            return false;
+        }
+        resp.u16 = PINST_Enabled;
+        src = &resp.u16;
+        len = 2;
+        break;
+    case GS_ReqGetTermination:
     case ELM_ReqReadFlash:
         s_last_error = FBK_UnsupportedFeature;
         return false;
@@ -1290,6 +1302,6 @@ void candle_print_status(void)
                    c->nom_bitrate, c->data_set ? c->data_bitrate : 0, canfd_mode_str(c->mode), c->tx_queued, c->tx_done);
         }
         printf("\n        USB IN interface %d: fifo %" PRIu32 "/%d, sent %" PRIu32 ", overflow %" PRIu32 "\n",
-               ch, u->count, HOST_FIFO_DEPTH, u->sent_msgs, u->overflows);
+               ch == 0 ? 0 : ch + 1, u->count, HOST_FIFO_DEPTH, u->sent_msgs, u->overflows);
     }
 }

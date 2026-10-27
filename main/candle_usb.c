@@ -1,9 +1,11 @@
 /*
  * USB device for the Candlelight / ElmueSoft protocol on the ESP32-S31 high-speed OTG port.
  *
- * - Two vendor interfaces: interface 0 = CAN1, interface 1 = CAN2, each with one bulk IN/OUT pair
- * - MS OS 2.0 descriptors bind WinUSB to both interfaces and register the Candlelight device
- *   interface GUID, so Windows needs no driver installation and cangaroo finds the adapter
+ * - Interfaces as in the CANable 2.5 firmware: 0 = CAN1, 1 = firmware update (DFU runtime),
+ *   2 = CAN2. The CAN interfaces have one bulk IN/OUT pair each, the DFU interface none.
+ * - MS OS 2.0 descriptors bind WinUSB to all interfaces and register the Candlelight device
+ *   interface GUID for the CAN interfaces (the DFU interface gets its own GUID), so Windows
+ *   needs no driver installation and cangaroo finds the adapter
  * - The vendor class runs without FIFOs: one USB transfer is one protocol message (or blob)
  */
 #include <stdio.h>
@@ -22,7 +24,14 @@ static const char *TAG = "candle_usb";
 #define VENDOR_REQUEST_MS_OS_20     0x77
 #define EP_SIZE_FS                  64
 #define EP_SIZE_HS                  512
-#define CONFIG_TOTAL_LEN            (TUD_CONFIG_DESC_LEN + CANDLE_CHANNEL_COUNT * TUD_VENDOR_DESC_LEN)
+#define CONFIG_TOTAL_LEN            (TUD_CONFIG_DESC_LEN + CANDLE_CHANNEL_COUNT * TUD_VENDOR_DESC_LEN + TUD_DFU_RT_DESC_LEN)
+
+enum {
+    ITF_NUM_CAN1 = 0,
+    ITF_NUM_DFU,            // the CANable 2.5 hosts expect the firmware update interface here
+    ITF_NUM_CAN2,
+    ITF_COUNT,
+};
 
 enum {
     STRID_LANGID = 0,
@@ -31,10 +40,12 @@ enum {
     STRID_SERIAL,
     STRID_CAN1,
     STRID_CAN2,
+    STRID_DFU,
     STRID_COUNT,
 };
 
 _Static_assert(CFG_TUD_VENDOR == CANDLE_CHANNEL_COUNT, "set CONFIG_TINYUSB_VENDOR_COUNT=2");
+_Static_assert(CFG_TUD_DFU_RUNTIME, "set CONFIG_TINYUSB_DFU_MODE_DFU_RUNTIME=y");
 _Static_assert(CFG_TUD_VENDOR_RX_BUFSIZE == 0 && CFG_TUD_VENDOR_TX_BUFSIZE == 0,
                "vendor FIFOs must be off: one USB transfer per protocol message");
 _Static_assert(CFG_TUD_VENDOR_EPSIZE >= MAX_BLOB_SIZE_USB, "CONFIG_TINYUSB_VENDOR_EPSIZE must hold a 2 KB blob");
@@ -49,7 +60,7 @@ static const tusb_desc_device_t s_device = {
     .bMaxPacketSize0 = CFG_TUD_ENDPOINT0_SIZE,
     .idVendor = 0x303A,                 // Espressif
     .idProduct = CONFIG_CANDLE_USB_PID,
-    .bcdDevice = 0x0100,
+    .bcdDevice = 0x0101,                // Windows caches MS OS descriptors per bcdDevice: raise it on layout changes
     .iManufacturer = STRID_MANUFACTURER,
     .iProduct = STRID_PRODUCT,
     .iSerialNumber = STRID_SERIAL,
@@ -68,28 +79,35 @@ static const tusb_desc_device_qualifier_t s_qualifier = {
     .bReserved = 0,
 };
 
+// DFU runtime: no detach support (attributes 0), firmware updates go through the USB-JTAG port
+#define DFU_RT_DESC     TUD_DFU_RT_DESCRIPTOR(ITF_NUM_DFU, STRID_DFU, 0x00, 1000, 2048)
+
 static const uint8_t s_fs_config[] = {
-    TUD_CONFIG_DESCRIPTOR(1, CANDLE_CHANNEL_COUNT, 0, CONFIG_TOTAL_LEN, 0, 100),
-    TUD_VENDOR_DESCRIPTOR(0, STRID_CAN1, 0x01, 0x81, EP_SIZE_FS),
-    TUD_VENDOR_DESCRIPTOR(1, STRID_CAN2, 0x02, 0x82, EP_SIZE_FS),
+    TUD_CONFIG_DESCRIPTOR(1, ITF_COUNT, 0, CONFIG_TOTAL_LEN, 0, 100),
+    TUD_VENDOR_DESCRIPTOR(ITF_NUM_CAN1, STRID_CAN1, 0x01, 0x81, EP_SIZE_FS),
+    DFU_RT_DESC,
+    TUD_VENDOR_DESCRIPTOR(ITF_NUM_CAN2, STRID_CAN2, 0x02, 0x82, EP_SIZE_FS),
 };
 
 static const uint8_t s_hs_config[] = {
-    TUD_CONFIG_DESCRIPTOR(1, CANDLE_CHANNEL_COUNT, 0, CONFIG_TOTAL_LEN, 0, 100),
-    TUD_VENDOR_DESCRIPTOR(0, STRID_CAN1, 0x01, 0x81, EP_SIZE_HS),
-    TUD_VENDOR_DESCRIPTOR(1, STRID_CAN2, 0x02, 0x82, EP_SIZE_HS),
+    TUD_CONFIG_DESCRIPTOR(1, ITF_COUNT, 0, CONFIG_TOTAL_LEN, 0, 100),
+    TUD_VENDOR_DESCRIPTOR(ITF_NUM_CAN1, STRID_CAN1, 0x01, 0x81, EP_SIZE_HS),
+    DFU_RT_DESC,
+    TUD_VENDOR_DESCRIPTOR(ITF_NUM_CAN2, STRID_CAN2, 0x02, 0x82, EP_SIZE_HS),
 };
 
 /* ------------------------------------------------ MS OS 2.0 ------------------------------------------------ */
 
-// Device interface GUID of candleLight / gs_usb adapters, searched by cangaroo and the candle API
+// Device interface GUID of candleLight / gs_usb adapters, searched by cangaroo and the candle API.
+// The firmware update interface gets the CANable 2.5 DFU GUID (same length), so CAN hosts skip it.
 #define CANDLE_INTERFACE_GUID       "{c15b4308-04d3-11e6-b3ea-6057189e6443}"
+#define DFU_INTERFACE_GUID          "{c25b4308-04d3-11e6-b3ea-6057189e6443}"
 #define MS_OS_PROP_NAME             "DeviceInterfaceGUIDs"
 #define MS_OS_PROP_NAME_LEN         ((sizeof(MS_OS_PROP_NAME)) * 2)            // UTF-16 incl. NUL = 42
 #define MS_OS_PROP_DATA_LEN         ((sizeof(CANDLE_INTERFACE_GUID) + 1) * 2)  // REG_MULTI_SZ: 2 NULs = 80
 #define MS_OS_REG_PROP_LEN          (10 + MS_OS_PROP_NAME_LEN + MS_OS_PROP_DATA_LEN)
 #define MS_OS_FUNCTION_LEN          (8 + 20 + MS_OS_REG_PROP_LEN)
-#define MS_OS_CONFIG_LEN            (8 + CANDLE_CHANNEL_COUNT * MS_OS_FUNCTION_LEN)
+#define MS_OS_CONFIG_LEN            (8 + ITF_COUNT * MS_OS_FUNCTION_LEN)
 #define MS_OS_DESC_LEN              (10 + MS_OS_CONFIG_LEN)
 
 static uint8_t s_ms_os_desc[MS_OS_DESC_LEN];
@@ -130,7 +148,7 @@ static void build_ms_os_desc(void)
     *p++ = 0;
     p = put16(p, MS_OS_CONFIG_LEN);
 
-    for (int itf = 0; itf < CANDLE_CHANNEL_COUNT; itf++) {
+    for (int itf = 0; itf < ITF_COUNT; itf++) {
         // Function subset header for one interface
         p = put16(p, 8);
         p = put16(p, MS_OS_20_SUBSET_HEADER_FUNCTION);
@@ -151,7 +169,7 @@ static void build_ms_os_desc(void)
         p = put16(p, MS_OS_PROP_NAME_LEN);
         p = put_utf16(p, MS_OS_PROP_NAME, MS_OS_PROP_NAME_LEN / 2);
         p = put16(p, MS_OS_PROP_DATA_LEN);
-        p = put_utf16(p, CANDLE_INTERFACE_GUID, MS_OS_PROP_DATA_LEN / 2);
+        p = put_utf16(p, itf == ITF_NUM_DFU ? DFU_INTERFACE_GUID : CANDLE_INTERFACE_GUID, MS_OS_PROP_DATA_LEN / 2);
     }
     assert(p == s_ms_os_desc + sizeof(s_ms_os_desc));
 }
@@ -173,6 +191,11 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
         return tud_control_xfer(rhport, request, s_ms_os_desc, sizeof(s_ms_os_desc));
     }
     return candle_control_request(rhport, stage, request);
+}
+
+void tud_dfu_runtime_reboot_to_dfu_cb(void)
+{
+    ESP_LOGW(TAG, "DFU detach ignored: flash the ESP32-S31 through the USB-JTAG port");
 }
 
 void tud_vendor_rx_cb(uint8_t itf, uint8_t const *buffer, uint16_t bufsize)
@@ -234,6 +257,7 @@ esp_err_t candle_usb_init(void)
     strings[STRID_SERIAL] = serial;
     strings[STRID_CAN1] = "CAN1";
     strings[STRID_CAN2] = "CAN2";
+    strings[STRID_DFU] = "Firmware Update Interface";
 
     tinyusb_config_t cfg = TINYUSB_DEFAULT_CONFIG(usb_event_cb, NULL);
     cfg.descriptor.device = &s_device;

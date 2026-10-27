@@ -17,8 +17,9 @@ CONFIG_CANFD_QUEUE_IN_PSRAM=y
 CONFIG_CANFD_RX_QUEUE_DEPTH=1024
 CONFIG_CANFD_TX_QUEUE_DEPTH=64
 
-# USB Candlelight adapter on the HS OTG port: two vendor interfaces (CAN1, CAN2),
-# no vendor FIFOs (one USB transfer = one protocol message), 2 KB transfers for blobs
+# USB Candlelight adapter on the HS OTG port: CAN1 (interface 0), DFU runtime (1), CAN2 (2)
+# as in the CANable 2.5 firmware, no vendor FIFOs (one USB transfer = one protocol message),
+# 2 KB transfers for blobs
 CONFIG_CANDLE_USB_ENABLE=y
 CONFIG_TINYUSB_VENDOR_COUNT=2
 CONFIG_TINYUSB_VENDOR_RX_BUFSIZE=0
@@ -27,7 +28,7 @@ CONFIG_TINYUSB_VENDOR_EPSIZE=2048
 CONFIG_TINYUSB_CDC_ENABLED=n
 CONFIG_TINYUSB_MSC_ENABLED=n
 CONFIG_TINYUSB_NET_MODE_NONE=y
-CONFIG_TINYUSB_DFU_MODE_NONE=y
+CONFIG_TINYUSB_DFU_MODE_DFU_RUNTIME=y
 
 CONFIG_FREERTOS_HZ=1000
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096

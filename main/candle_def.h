@@ -43,6 +43,16 @@ typedef enum {
     ELM_ReqWriteFlash       = 27,
 } eUsbRequest;
 
+// ELM_ReqGetPinStatus: wValue = pin ID, the response is a 16 bit pin status
+typedef enum {
+    PINID_BOOT0 = 1,
+} ePinID;
+
+typedef enum {
+    PINST_High    = 0x0001,
+    PINST_Enabled = 0x0002,
+} ePinStatus;
+
 typedef enum {
     GS_DevFlagListenOnly     = 0x00001,
     GS_DevFlagLoopback       = 0x00002,
