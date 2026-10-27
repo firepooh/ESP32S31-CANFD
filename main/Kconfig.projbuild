@@ -79,4 +79,29 @@ menu "CAN-FD 2-Port Test Configuration"
         bool "Initialize both ports with default settings at boot"
         default y
 
+    menu "USB Candlelight adapter"
+
+        config CANDLE_USB_ENABLE
+            bool "Act as a Candlelight / ElmueSoft USB-CAN adapter on the HS OTG port"
+            default y
+            help
+                Two-channel Candlelight (gs_usb) device with the ElmueSoft CANable 2.5
+                extensions, compatible with cangaroo. While the host has a channel started,
+                that CAN port is controlled by the host.
+
+        config CANDLE_USB_PID
+            hex "USB product ID (vendor ID is Espressif 0x303A)"
+            depends on CANDLE_USB_ENABLE
+            default 0x4C31
+            help
+                Test PID. Windows caches descriptors per VID/PID/bcdDevice.
+
+        config CANDLE_HOST_FIFO_DEPTH
+            int "Messages buffered per USB IN interface"
+            depends on CANDLE_USB_ENABLE
+            range 64 8192
+            default 1024
+
+    endmenu
+
 endmenu

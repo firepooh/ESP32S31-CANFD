@@ -49,19 +49,21 @@ typedef uint16_t tx_idx_t;      // index into tx_slots, queued in tx_free_q
 typedef enum {
     PORT_EVT_RX = 0,
     PORT_EVT_STATE,
+    PORT_EVT_TX_DONE,
     PORT_EVT_STOP,
 } port_evt_type_t;
 
 typedef struct {
     uint8_t type;           // port_evt_type_t
-    uint8_t old_state;      // twai_error_state_t, for PORT_EVT_STATE
+    uint8_t old_state;      // twai_error_state_t, for PORT_EVT_STATE; TX success for PORT_EVT_TX_DONE
     uint8_t new_state;
-    canfd_msg_t msg;        // for PORT_EVT_RX
+    canfd_msg_t msg;        // for PORT_EVT_RX and PORT_EVT_TX_DONE
 } port_evt_t;
 
 typedef struct {
     twai_frame_t frame;     // must stay the first member, see port_on_tx_done()
     uint8_t data[TWAIFD_FRAME_MAX_LEN];
+    uint32_t tag;           // canfd_msg_t.tag of the queued frame
 } tx_slot_t;
 
 typedef struct {
@@ -86,7 +88,9 @@ typedef struct {
     volatile bool errlog;
     canfd_rx_hook_t rx_hook;
     void *rx_hook_arg;
-    int64_t recover_at_us;              // pending automatic recovery, 0 = none (RX task only)
+    canfd_tx_hook_t volatile tx_hook;
+    void *tx_hook_arg;
+    int64_t recover_at_us;             // pending automatic recovery, 0 = none (RX task only)
     canfd_fault_t fault;
     uint32_t saved_sig_out;             // TX pin signal before the fault was injected
     bool sig_saved;
@@ -124,6 +128,22 @@ static IRAM_ATTR bool port_on_tx_done(twai_node_handle_t handle, const twai_tx_d
 
     const tx_slot_t *slot = (const tx_slot_t *)edata->done_tx_frame;
     if (slot >= p->tx_slots && slot < p->tx_slots + TX_POOL_SIZE) {
+        if (p->tx_hook) {
+            // Copy the frame before the slot is handed back and reused
+            port_evt_t evt = {
+                .type = PORT_EVT_TX_DONE,
+                .old_state = edata->is_tx_success,
+                .msg = {
+                    .header = slot->frame.header,
+                    .len = (uint8_t)slot->frame.buffer_len,
+                    .tag = slot->tag,
+                },
+            };
+            memcpy(evt.msg.data, slot->data, slot->frame.buffer_len);
+            if (xQueueSendFromISR(p->evt_q, &evt, &woken) != pdTRUE) {
+                p->stats.rx_drop++;
+            }
+        }
         tx_idx_t idx = (tx_idx_t)(slot - p->tx_slots);
         xQueueSendFromISR(p->tx_free_q, &idx, &woken);
     }
@@ -313,6 +333,18 @@ static void port_rx_task(void *arg)
             }
             continue;
         }
+        if (evt.type == PORT_EVT_TX_DONE) {
+            canfd_tx_hook_t tx_hook;
+            void *tx_hook_arg;
+            taskENTER_CRITICAL(&s_hook_lock);
+            tx_hook = p->tx_hook;
+            tx_hook_arg = p->tx_hook_arg;
+            taskEXIT_CRITICAL(&s_hook_lock);
+            if (tx_hook) {
+                tx_hook(port, &evt.msg, evt.old_state != 0, tx_hook_arg);
+            }
+            continue;
+        }
 
         canfd_rx_hook_t hook;
         void *hook_arg;
@@ -415,6 +447,7 @@ const char *canfd_mode_str(canfd_mode_t mode)
     case CANFD_MODE_NORMAL:      return "normal";
     case CANFD_MODE_LISTEN_ONLY: return "listen";
     case CANFD_MODE_SELF_TEST:   return "selftest";
+    case CANFD_MODE_LOOPBACK:    return "loopback";
     default:                     return "unknown";
     }
 }
@@ -497,7 +530,8 @@ esp_err_t canfd_port_open(int port, const canfd_port_config_t *cfg)
             .sp_permill = cfg->nominal_sp_permill,
         },
         .data_timing = {
-            .bitrate = cfg->data_bitrate,
+            // With exact timing the data phase is set below, skip the bitrate calculation here
+            .bitrate = cfg->timing_advanced ? 0 : cfg->data_bitrate,
             .sp_permill = cfg->data_sp_permill,
             .ssp_permill = cfg->data_ssp_permill,
         },
@@ -507,11 +541,17 @@ esp_err_t canfd_port_open(int port, const canfd_port_config_t *cfg)
         .intr_priority = 0,
         .flags = {
             .enable_self_test = (cfg->mode == CANFD_MODE_SELF_TEST),
-            .enable_loopback = (cfg->mode == CANFD_MODE_SELF_TEST),
+            .enable_loopback = (cfg->mode == CANFD_MODE_SELF_TEST || cfg->mode == CANFD_MODE_LOOPBACK),
             .enable_listen_only = (cfg->mode == CANFD_MODE_LISTEN_ONLY),
         },
     };
     ESP_GOTO_ON_ERROR(twai_new_node_onchip(&node_cfg, &p->node), err, TAG, "CAN%d: create node failed", port);
+
+    if (cfg->timing_advanced) {
+        ESP_GOTO_ON_ERROR(twai_node_reconfig_timing(p->node, &cfg->nominal_timing,
+                                                    cfg->data_bitrate ? &cfg->data_timing : NULL),
+                          err, TAG, "CAN%d: bit timing rejected", port);
+    }
 
     twai_event_callbacks_t cbs = {
         .on_tx_done = port_on_tx_done,
@@ -543,6 +583,7 @@ esp_err_t canfd_port_close(int port)
     p->is_open = false;
     p->dump = false;
     canfd_port_set_rx_hook(port, NULL, NULL);
+    canfd_port_set_tx_hook(port, NULL, NULL);
     port_release(p, true);
     return ESP_OK;
 }
@@ -597,6 +638,7 @@ esp_err_t canfd_port_send(int port, const canfd_msg_t *msg, int timeout_ms)
             p->stats.txpool_peak = in_use;
         }
         tx_slot_t *slot = &p->tx_slots[idx];
+        slot->tag = msg->tag;
         slot->frame = (twai_frame_t) {
             .header = *h,
             .buffer = slot->data,
@@ -750,6 +792,18 @@ void canfd_port_set_dump(int port, bool enable)
 bool canfd_port_get_dump(int port)
 {
     return canfd_port_is_valid(port) && port_get(port)->dump;
+}
+
+void canfd_port_set_tx_hook(int port, canfd_tx_hook_t hook, void *arg)
+{
+    if (!canfd_port_is_valid(port)) {
+        return;
+    }
+    canfd_port_t *p = port_get(port);
+    taskENTER_CRITICAL(&s_hook_lock);
+    p->tx_hook_arg = arg;
+    p->tx_hook = hook;
+    taskEXIT_CRITICAL(&s_hook_lock);
 }
 
 void canfd_port_set_rx_hook(int port, canfd_rx_hook_t hook, void *arg)

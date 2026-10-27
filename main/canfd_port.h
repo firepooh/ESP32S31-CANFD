@@ -18,10 +18,13 @@ extern "C" {
 #define CANFD_PORT_FIRST    1
 #define CANFD_PORT_LAST     CANFD_PORT_NUM
 
+#define CANFD_CLOCK_HZ      80000000    // TWAI default clock source (PLL_F80M)
+
 typedef enum {
     CANFD_MODE_NORMAL = 0,      /**< Normal operation, needs another node to ACK */
     CANFD_MODE_LISTEN_ONLY,     /**< Monitor the bus only, no TX and no ACK */
     CANFD_MODE_SELF_TEST,       /**< Internal loopback, no ACK required */
+    CANFD_MODE_LOOPBACK,        /**< Frames go to the bus and are also received by this node (needs ACK) */
 } canfd_mode_t;
 
 typedef enum {
@@ -39,6 +42,11 @@ typedef struct {
     int8_t retry_limit;             /**< Hardware retransmission limit [-1:15], -1 = retry forever */
     uint32_t auto_recover_ms;       /**< Start bus-off recovery this long after bus-off, 0 = manual only */
     canfd_mode_t mode;
+    /* Exact bit timing (e.g. from a USB host). When set, it replaces the bitrate / sample point
+     * calculation; the bitrate fields above must still hold the resulting bitrates. */
+    bool timing_advanced;
+    twai_timing_advanced_config_t nominal_timing;
+    twai_timing_advanced_config_t data_timing;     /**< used when data_bitrate != 0 */
 } canfd_port_config_t;
 
 typedef struct {
@@ -74,6 +82,7 @@ typedef struct {
     twai_frame_header_t header;
     uint8_t len;                            /**< Payload length in bytes */
     uint8_t data[TWAIFD_FRAME_MAX_LEN];
+    uint32_t tag;                           /**< TX: user value handed back to the TX hook */
 } canfd_msg_t;
 
 /**
@@ -81,6 +90,12 @@ typedef struct {
  *        While a hook is set, frames are not printed by the dump function.
  */
 typedef void (*canfd_rx_hook_t)(int port, const canfd_msg_t *msg, void *arg);
+
+/**
+ * @brief TX hook, called from the port's RX task when a queued frame has left the controller.
+ *        @p msg is the frame as sent (with its tag), @p success is false if the driver gave up.
+ */
+typedef void (*canfd_tx_hook_t)(int port, const canfd_msg_t *msg, bool success, void *arg);
 
 void canfd_port_get_default_config(canfd_port_config_t *cfg);
 void canfd_port_get_pins(int port, int *tx_gpio, int *rx_gpio);
@@ -111,6 +126,7 @@ esp_err_t canfd_port_get_mem_info(int port, canfd_port_mem_info_t *info);
 
 void canfd_port_set_dump(int port, bool enable);
 bool canfd_port_get_dump(int port);
+void canfd_port_set_tx_hook(int port, canfd_tx_hook_t hook, void *arg);
 
 /**
  * @brief Print a bus error summary (at most every 500 ms) while errors keep occurring. Default: on.

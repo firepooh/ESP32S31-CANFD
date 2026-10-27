@@ -17,6 +17,9 @@
 #include "canfd_port.h"
 #include "cmd_canfd.h"
 #include "cmd_system.h"
+#if CONFIG_CANDLE_USB_ENABLE
+#include "candle_usb.h"
+#endif
 
 static const char *TAG = "app";
 
@@ -35,6 +38,9 @@ static void print_banner(void)
            " can_send 1 123 1122   send a frame (see 'help can_send')\n"
            " can_dump              print received frames\n"
            " mem [-t 1024]         RAM / PSRAM usage and PSRAM test\n"
+#if CONFIG_CANDLE_USB_ENABLE
+           " usb                   USB Candlelight adapter (HS OTG) state\n"
+#endif
            " help                  all commands\n"
            "==============================================================\n",
            CONFIG_CANFD_PORT1_TX_GPIO, CONFIG_CANFD_PORT1_RX_GPIO,
@@ -68,10 +74,16 @@ void app_main(void)
 
     register_canfd_commands();
     register_system_commands();
+#if CONFIG_CANDLE_USB_ENABLE
+    register_candle_commands();
+#endif
     print_banner();
 
 #if CONFIG_CANFD_AUTO_INIT
     canfd_open_all_default();
+#endif
+#if CONFIG_CANDLE_USB_ENABLE
+    ESP_ERROR_CHECK(candle_usb_init());
 #endif
 
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
