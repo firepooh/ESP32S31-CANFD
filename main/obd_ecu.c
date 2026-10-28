@@ -3,13 +3,18 @@
  *
  * - Service 01: PIDs 05, 0C, 0D, 1F, 2F, A6 and the supported-PID ranges 00..A0,
  *   computed from the enabled items. Only the first PID of a request is answered.
- * - Service 09: PID 00 and 02 (VIN). The VIN goes out as ISO-TP FF + CFs; the CFs are sent
- *   right after the tester's flow control (block size and STmin are not applied).
+ * - Service 09: PID 00 and 02 (VIN).
+ * - Service 03: the stored DTCs from the settings (none: 43 00). Service 04 clears them
+ *   until the next boot or until the list is set again; the stored list is kept.
+ * - Responses longer than 7 bytes go out as ISO-TP FF + CFs; the CFs are sent right after
+ *   the tester's flow control (block size and STmin are not applied).
  * - Unsupported requests get no response.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <ctype.h>
 #include <inttypes.h>
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -38,15 +43,20 @@ static const struct {
     [OBD_ITEM_FUEL]    = { 0x01, 0x2F, "2F",  "fuel level [%]" },
     [OBD_ITEM_ODO]     = { 0x01, 0xA6, "A6",  "odometer [km]" },
     [OBD_ITEM_VIN]     = { 0x09, 0x02, "VIN", "vehicle identification number" },
+    [OBD_ITEM_DTC]     = { 0x03, 0x00, "DTC", "stored DTCs (03), clear (04)" },
 };
 
+/* Multi-frame response waiting for the tester's flow control */
 typedef struct {
-    bool vin_wait_fc;
+    bool wait_fc;
     int64_t ff_us;
-} vin_tx_t;
+    uint8_t len;
+    uint8_t data[3 + OBD_VIN_LEN];      // VIN: 20 bytes, 43 N + 8 DTCs: 18 bytes
+} iso_tx_t;
 
 static obd_ecu_cfg_t s_cfg[CANFD_PORT_NUM];
-static vin_tx_t s_vin[CANFD_PORT_NUM];
+static iso_tx_t s_tx[CANFD_PORT_NUM];
+static bool s_dtc_cleared[CANFD_PORT_NUM];
 
 static inline int port_idx(int port)
 {
@@ -79,6 +89,38 @@ static void send_single(int port, const obd_ecu_cfg_t *cfg, const uint8_t *paylo
     uint8_t buf[8] = { len };
     memcpy(buf + 1, payload, len);
     send_frame(port, cfg, buf, (uint8_t)(len + 1));
+}
+
+/* Single frame up to 7 bytes, otherwise FF now and the CFs after the flow control */
+static void send_payload(int port, const obd_ecu_cfg_t *cfg, const uint8_t *payload, uint8_t len)
+{
+    if (len <= 7) {
+        send_single(port, cfg, payload, len);
+        return;
+    }
+    iso_tx_t *tx = &s_tx[port_idx(port)];
+    if (len > sizeof(tx->data)) {
+        return;
+    }
+    uint8_t ff[8] = { 0x10, len };
+    memcpy(ff + 2, payload, 6);
+    memcpy(tx->data, payload, len);
+    tx->len = len;
+    tx->ff_us = esp_timer_get_time();
+    tx->wait_fc = true;
+    send_frame(port, cfg, ff, sizeof(ff));
+}
+
+static void send_cfs(int port, const obd_ecu_cfg_t *cfg)
+{
+    const iso_tx_t *tx = &s_tx[port_idx(port)];
+    uint8_t sn = 1;
+    for (int pos = 6; pos < tx->len; pos += 7, sn++) {
+        uint8_t cf[8] = { (uint8_t)(0x20 | (sn & 0x0F)) };
+        const int n = tx->len - pos < 7 ? tx->len - pos : 7;
+        memcpy(cf + 1, tx->data + pos, n);
+        send_frame(port, cfg, cf, (uint8_t)(n + 1));
+    }
 }
 
 /* Bits of the PIDs base+1 .. base+0x20, MSB first; the last bit announces the next range */
@@ -175,28 +217,40 @@ static void service_09(int port, const obd_ecu_cfg_t *cfg, uint8_t pid)
         const uint8_t p[6] = { 0x49, 0x00, 0x40, 0x00, 0x00, 0x00 };   // only PID 02
         send_single(port, cfg, p, sizeof(p));
     } else if (pid == 0x02) {
-        // 49 02 01 + 17 characters = 20 bytes: FF with the first 3 characters
-        const uint8_t ff[8] = { 0x10, 3 + OBD_VIN_LEN, 0x49, 0x02, 0x01, cfg->vin[0], cfg->vin[1], cfg->vin[2] };
-        send_frame(port, cfg, ff, sizeof(ff));
-        s_vin[port_idx(port)] = (vin_tx_t) { .vin_wait_fc = true, .ff_us = esp_timer_get_time() };
+        uint8_t p[3 + OBD_VIN_LEN] = { 0x49, 0x02, 0x01 };     // 1 data item
+        memcpy(p + 3, cfg->vin, OBD_VIN_LEN);
+        send_payload(port, cfg, p, sizeof(p));
     }
 }
 
-static void send_vin_cfs(int port, const obd_ecu_cfg_t *cfg)
+/* 03: 43, number of DTCs, 2 bytes per DTC */
+static void service_03(int port, const obd_ecu_cfg_t *cfg)
 {
-    uint8_t sn = 1;
-    for (int pos = 3; pos < OBD_VIN_LEN; pos += 7, sn++) {
-        uint8_t cf[8] = { (uint8_t)(0x20 | (sn & 0x0F)) };
-        const int n = OBD_VIN_LEN - pos < 7 ? OBD_VIN_LEN - pos : 7;
-        memcpy(cf + 1, cfg->vin + pos, n);
-        send_frame(port, cfg, cf, (uint8_t)(n + 1));
+    if (!item_on(cfg, OBD_ITEM_DTC)) {
+        return;
     }
+    const uint8_t n = s_dtc_cleared[port_idx(port)] ? 0 : cfg->dtc_count;
+    uint8_t p[2 + 2 * OBD_DTC_MAX] = { 0x43, n };
+    for (int i = 0; i < n; i++) {
+        put_be(p + 2 + 2 * i, cfg->dtc[i], 2);
+    }
+    send_payload(port, cfg, p, (uint8_t)(2 + 2 * n));
+}
+
+static void service_04(int port, const obd_ecu_cfg_t *cfg)
+{
+    if (!item_on(cfg, OBD_ITEM_DTC)) {
+        return;
+    }
+    s_dtc_cleared[port_idx(port)] = true;
+    const uint8_t p[1] = { 0x44 };
+    send_single(port, cfg, p, sizeof(p));
 }
 
 void obd_ecu_rx(int port, const canfd_msg_t *msg)
 {
     const obd_ecu_cfg_t *cfg = &s_cfg[port_idx(port)];
-    vin_tx_t *vin = &s_vin[port_idx(port)];
+    iso_tx_t *tx = &s_tx[port_idx(port)];
     const twai_frame_header_t *h = &msg->header;
     const uint8_t *d = msg->data;
 
@@ -208,23 +262,27 @@ void obd_ecu_rx(int port, const canfd_msg_t *msg)
     }
 
     switch (d[0] >> 4) {
-    case 0x3:   // flow control for the VIN, always sent to the physical address
-        if (vin->vin_wait_fc && h->id == cfg->req_id) {
-            vin->vin_wait_fc = false;
-            if (d[0] == 0x30 && esp_timer_get_time() - vin->ff_us < OBD_FC_TIMEOUT_US) {
-                send_vin_cfs(port, cfg);
+    case 0x3:   // flow control for a multi-frame response, always sent to the physical address
+        if (tx->wait_fc && h->id == cfg->req_id) {
+            tx->wait_fc = false;
+            if (d[0] == 0x30 && esp_timer_get_time() - tx->ff_us < OBD_FC_TIMEOUT_US) {
+                send_cfs(port, cfg);
             }
         }
         return;
     case 0x0: { // single frame request
         const uint8_t n = d[0] & 0x0F;
-        if (n < 2 || n > msg->len - 1) {
+        if (n < 1 || n > msg->len - 1) {
             return;
         }
-        if (d[1] == 0x01) {
+        if (d[1] == 0x01 && n >= 2) {
             service_01(port, cfg, d[2]);
-        } else if (d[1] == 0x09) {
+        } else if (d[1] == 0x09 && n >= 2) {
             service_09(port, cfg, d[2]);
+        } else if (d[1] == 0x03) {
+            service_03(port, cfg);
+        } else if (d[1] == 0x04) {
+            service_04(port, cfg);
         }
         return;
     }
@@ -304,6 +362,46 @@ obd_item_t obd_ecu_item_find(const char *name)
     return OBD_ITEM_COUNT;
 }
 
+/* "P0301" -> 0x0301: letter P/C/B/U in bits 15-14, then 4 hex digits (the first one 0..3) */
+static bool parse_dtc(const char *s, uint16_t *code)
+{
+    static const char letters[] = "PCBU";
+    const char *l = s[0] ? strchr(letters, toupper((unsigned char)s[0])) : NULL;
+    if (!l || strlen(s) != 5 || s[1] < '0' || s[1] > '3') {
+        return false;
+    }
+    char *end;
+    const unsigned long v = strtoul(s + 1, &end, 16);
+    if (*end != '\0') {
+        return false;
+    }
+    *code = (uint16_t)(((l - letters) << 14) | v);
+    return true;
+}
+
+static void format_dtc(uint16_t code, char *buf)
+{
+    snprintf(buf, 6, "%c%04X", "PCBU"[code >> 14], code & 0x3FFF);
+}
+
+bool obd_ecu_set_dtcs(int port, int count, char **codes)
+{
+    uint16_t dtc[OBD_DTC_MAX];
+    if (count > OBD_DTC_MAX) {
+        return false;
+    }
+    for (int i = 0; i < count; i++) {
+        if (!parse_dtc(codes[i], &dtc[i])) {
+            return false;
+        }
+    }
+    obd_ecu_cfg_t *cfg = &s_cfg[port_idx(port)];
+    memcpy(cfg->dtc, dtc, count * sizeof(dtc[0]));
+    cfg->dtc_count = (uint8_t)count;
+    s_dtc_cleared[port_idx(port)] = false;
+    return true;
+}
+
 void obd_ecu_print(int port)
 {
     const obd_ecu_cfg_t *cfg = &s_cfg[port_idx(port)];
@@ -318,6 +416,15 @@ void obd_ecu_print(int port)
         case OBD_ITEM_FUEL:    printf("%u\n", cfg->fuel_pct); break;
         case OBD_ITEM_ODO:     printf("%" PRIu32 "\n", cfg->odo_km); break;
         case OBD_ITEM_VIN:     printf("%s\n", cfg->vin); break;
+        case OBD_ITEM_DTC:
+            for (int d = 0; d < cfg->dtc_count; d++) {
+                char code[6];
+                format_dtc(cfg->dtc[d], code);
+                printf("%s ", code);
+            }
+            printf("%s\n", cfg->dtc_count == 0 ? "none" :
+                   s_dtc_cleared[port_idx(port)] ? "(cleared by 04 until reboot)" : "");
+            break;
         default:               printf("\n"); break;
         }
     }

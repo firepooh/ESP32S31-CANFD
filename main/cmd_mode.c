@@ -8,6 +8,7 @@
  *   obd <port> on|off <item|all>  answer an item or not (05 0C 0D 1F 2F A6 VIN)
  *   obd <port> set <item> <val>   value of 05 0C 0D 2F A6
  *   obd <port> vin <17 chars>
+ *   obd <port> dtc <P0301 ...>|none   stored DTCs (service 03)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -64,9 +65,10 @@ static int obd_usage(void)
 {
     printf("usage: obd [port]\n"
            "       obd <port> addr <hex>\n"
-           "       obd <port> on|off <05|0C|0D|1F|2F|A6|VIN|all>\n"
+           "       obd <port> on|off <05|0C|0D|1F|2F|A6|VIN|DTC|all>\n"
            "       obd <port> set <05|0C|0D|2F|A6> <value>\n"
-           "       obd <port> vin <17 characters>\n");
+           "       obd <port> vin <17 characters>\n"
+           "       obd <port> dtc <P0301 ...>|none\n");
     return 1;
 }
 
@@ -131,6 +133,12 @@ static int cmd_obd(int argc, char **argv)
             return 1;
         }
         strlcpy(cfg->vin, argv[3], sizeof(cfg->vin));
+    } else if (strcasecmp(op, "dtc") == 0 && argc >= 4) {
+        const bool none = argc == 4 && strcasecmp(argv[3], "none") == 0;
+        if (!obd_ecu_set_dtcs(port, none ? 0 : argc - 3, argv + 3)) {
+            printf("DTCs like P0301 C0123 B1234 U0100, at most %d\n", OBD_DTC_MAX);
+            return 1;
+        }
     } else {
         return obd_usage();
     }
@@ -156,9 +164,10 @@ void register_mode_commands(void)
         .command = "obd",
         .help = "Show or change the OBD ECU settings of a port (stored in NVS)\n"
                 "  obd <port> addr <hex>              request ID, response = request + 8\n"
-                "  obd <port> on|off <item|all>       items: 05 0C 0D 1F 2F A6 VIN\n"
+                "  obd <port> on|off <item|all>       items: 05 0C 0D 1F 2F A6 VIN DTC\n"
                 "  obd <port> set <item> <value>      05 [C], 0C [rpm], 0D [km/h], 2F [%], A6 [km]\n"
-                "  obd <port> vin <17 characters>",
+                "  obd <port> vin <17 characters>\n"
+                "  obd <port> dtc <P0301 ...>|none    stored DTCs for service 03 (at most 8)",
         .hint = "[<port> ...]",
         .func = cmd_obd,
     };
