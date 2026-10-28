@@ -75,10 +75,6 @@ menu "CAN-FD 2-Port Test Configuration"
             Only the data buffers move to PSRAM; the queue control blocks (which contain
             spinlocks) stay in internal RAM.
 
-    config CANFD_AUTO_INIT
-        bool "Initialize both ports with default settings at boot"
-        default y
-
     menu "USB Candlelight adapter"
 
         config CANDLE_USB_ENABLE

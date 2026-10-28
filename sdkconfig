@@ -1292,8 +1292,6 @@ CONFIG_CANFD_DEFAULT_AUTO_RECOVER_MS=0
 CONFIG_CANFD_TX_QUEUE_DEPTH=64
 CONFIG_CANFD_RX_QUEUE_DEPTH=1024
 CONFIG_CANFD_QUEUE_IN_PSRAM=y
-# default:
-CONFIG_CANFD_AUTO_INIT=y
 
 #
 # USB Candlelight adapter
@@ -3110,6 +3108,23 @@ CONFIG_MBEDTLS_PKCS1_V21=y
 # CONFIG_MBEDTLS_CHACHA20_C is not set
 # end of Stream Cipher
 # end of mbedTLS
+
+#
+# NVS
+#
+# default:
+# CONFIG_NVS_ENCRYPTION is not set
+# default:
+# CONFIG_NVS_ASSERT_ERROR_CHECK is not set
+# default:
+# CONFIG_NVS_LEGACY_DUP_KEYS_COMPATIBILITY is not set
+# default:
+# CONFIG_NVS_ALLOCATE_CACHE_IN_SPIRAM is not set
+# default:
+# CONFIG_NVS_BDL_STACK is not set
+# default:
+# CONFIG_NVS_FLASH_VERIFY_ERASE is not set
+# end of NVS
 
 #
 # PThreads

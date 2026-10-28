@@ -27,6 +27,7 @@
 #include "canfd_port.h"
 #include "candle_def.h"
 #include "candle.h"
+#include "ch_mode.h"
 
 static const char *TAG = "candle";
 
@@ -502,6 +503,17 @@ static void on_tx_done(int port, const canfd_msg_t *msg, bool success, void *arg
     }
 }
 
+/* MODE2: ch_mode owns the port hooks and passes the frames on */
+void candle_port_rx(int port, const canfd_msg_t *msg)
+{
+    on_rx_frame(port, msg, (void *)(intptr_t)(port - CANFD_PORT_FIRST));
+}
+
+void candle_port_tx_done(int port, const canfd_msg_t *msg, bool success)
+{
+    on_tx_done(port, msg, success, (void *)(intptr_t)(port - CANFD_PORT_FIRST));
+}
+
 /* ------------------------------------------------ CAN TX from the host ------------------------------------------------ */
 
 static void tx_frame(int ch, uint32_t can_id, uint8_t flags, uint8_t dlc_or_len, bool is_len,
@@ -631,7 +643,9 @@ static void ch_close(int ch)
     candle_ch_t *c = &s_ch[ch];
     xSemaphoreTake(s_port_mutex, portMAX_DELAY);
     c->open = false;
-    if (canfd_port_is_open(ch_port(ch))) {
+    if (ch_mode_get(ch_port(ch)) == CH_MODE_OBD) {
+        ch_mode_port_open(ch_port(ch), NULL);   // the OBD ECU keeps running at its own bitrate
+    } else if (canfd_port_is_open(ch_port(ch))) {
         canfd_port_close(ch_port(ch));
     }
     xSemaphoreGive(s_port_mutex);
@@ -641,6 +655,11 @@ static eFeedback ch_open(int ch)
 {
     candle_ch_t *c = &s_ch[ch];
     const int port = ch_port(ch);
+
+    if (ch_mode_get(port) == CH_MODE_OFF) {
+        ESP_LOGW(TAG, "CAN%d is in mode 0 (off), not started", port);
+        return FBK_UnsupportedFeature;
+    }
 
     canfd_port_config_t cfg;
     canfd_port_get_default_config(&cfg);
@@ -660,15 +679,22 @@ static eFeedback ch_open(int ch)
     cfg.mode = c->mode;
 
     xSemaphoreTake(s_port_mutex, portMAX_DELAY);
-    if (canfd_port_is_open(port)) {
-        canfd_port_close(port);     // opened by the console or left from an earlier session
+    esp_err_t err;
+    if (ch_mode_get(port) == CH_MODE_OBD) {
+        err = ch_mode_port_open(port, &cfg);    // reopens the port with the OBD ECU attached
+    } else {
+        if (canfd_port_is_open(port)) {
+            canfd_port_close(port);     // opened by the console or left from an earlier session
+        }
+        canfd_port_set_rx_hook(port, on_rx_frame, (void *)(intptr_t)ch);
+        canfd_port_set_tx_hook(port, on_tx_done, (void *)(intptr_t)ch);
+        err = canfd_port_open(port, &cfg);
+        if (err != ESP_OK) {
+            canfd_port_set_rx_hook(port, NULL, NULL);
+            canfd_port_set_tx_hook(port, NULL, NULL);
+        }
     }
-    canfd_port_set_rx_hook(port, on_rx_frame, (void *)(intptr_t)ch);
-    canfd_port_set_tx_hook(port, on_tx_done, (void *)(intptr_t)ch);
-    esp_err_t err = canfd_port_open(port, &cfg);
     if (err != ESP_OK) {
-        canfd_port_set_rx_hook(port, NULL, NULL);
-        canfd_port_set_tx_hook(port, NULL, NULL);
         xSemaphoreGive(s_port_mutex);
         ESP_LOGE(TAG, "CAN%d: open failed: %s", port, esp_err_to_name(err));
         return FBK_ErrorFromHAL;

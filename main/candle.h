@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "tusb.h"
+#include "canfd_port.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,6 +37,12 @@ void candle_usb_mount_changed(bool mounted);
  * @brief True while the USB host has the channel started (the port is controlled by the host).
  */
 bool candle_channel_is_open(int channel);
+
+/**
+ * @brief MODE2 port hooks (ch_mode.c) forward the host's frames here, called from the canN_rx task.
+ */
+void candle_port_rx(int port, const canfd_msg_t *msg);
+void candle_port_tx_done(int port, const canfd_msg_t *msg, bool success);
 
 /**
  * @brief Print USB / protocol state to the console.

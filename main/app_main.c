@@ -17,6 +17,7 @@
 #include "canfd_port.h"
 #include "cmd_canfd.h"
 #include "cmd_system.h"
+#include "ch_mode.h"
 #if CONFIG_CANDLE_USB_ENABLE
 #include "candle_usb.h"
 #endif
@@ -38,6 +39,8 @@ static void print_banner(void)
            " can_send 1 123 1122   send a frame (see 'help can_send')\n"
            " can_dump              print received frames\n"
            " mem [-t 1024]         RAM / PSRAM usage and PSRAM test\n"
+           " mode [1 2]            port mode: 0 off, 1 USB, 2 USB + OBD ECU\n"
+           " obd [1]               OBD ECU settings (see 'help obd')\n"
 #if CONFIG_CANDLE_USB_ENABLE
            " usb                   USB Candlelight adapter (HS OTG) state\n"
 #endif
@@ -74,14 +77,13 @@ void app_main(void)
 
     register_canfd_commands();
     register_system_commands();
+    register_mode_commands();
 #if CONFIG_CANDLE_USB_ENABLE
     register_candle_commands();
 #endif
     print_banner();
 
-#if CONFIG_CANFD_AUTO_INIT
-    canfd_open_all_default();
-#endif
+    ch_mode_init();     // opens only the MODE2 ports
 #if CONFIG_CANDLE_USB_ENABLE
     ESP_ERROR_CHECK(candle_usb_init());
 #endif
