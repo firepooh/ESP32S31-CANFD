@@ -1,8 +1,8 @@
 # ESP32-S31-Function-CoreBoard-1 (ESP32-S31-WROOM-3, 16 MB flash)
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 
-# Console on the USB Serial/JTAG port
-CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+# Console on UART0 (CP210x USB-UART bridge of the board)
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 
 # 16 MB octal PSRAM on ESP32-S31-WROOM-3, added to the heap (malloc > 16 KB goes to PSRAM)
 CONFIG_SPIRAM=y

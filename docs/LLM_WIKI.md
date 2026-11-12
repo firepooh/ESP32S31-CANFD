@@ -4,14 +4,13 @@
 구조, 동작 원리, 작업 환경, 주의 사항을 한곳에 모았다.
 콘솔 명령 사용법은 [CONSOLE_COMMANDS.md](CONSOLE_COMMANDS.md)에 따로 정리했다.
 
-> 기준 커밋: `b341262` (2026-10-28).
-> `README.md`의 "부팅하면 두 포트를 연다"는 설명은 이전 내용이다. 지금은 MODE2 포트만 부팅 때 연다.
+> 기준: 2026-11-12. 콘솔은 UART0(COM27), 포트 모드 기본값은 MODE1이다.
 
 ## 1. 한 줄 요약
 
 ESP32-S31 보드 하나로 CAN-FD 2포트 시험기, USB-CAN 어댑터, OBD-II ECU 시뮬레이터를 겸한다.
 
-- **콘솔 시험기**: USB Serial/JTAG 콘솔(`canfd>`)에서 두 포트를 직접 열고 송수신, 에러, 고장 주입을 시험한다.
+- **콘솔 시험기**: UART0 콘솔(`canfd>`)에서 두 포트를 직접 열고 송수신, 에러, 고장 주입을 시험한다.
 - **USB-CAN 어댑터**: HS OTG 포트에서 Candlelight(gs_usb) 장치로 동작한다. cangaroo가 붙는다.
 - **OBD-II ECU 시뮬레이터**: 포트별 MODE2에서 OBD 요청에 응답한다. cangaroo 모니터와 동시에 동작한다.
 
@@ -25,7 +24,8 @@ ESP32-S31 보드 하나로 CAN-FD 2포트 시험기, USB-CAN 어댑터, OBD-II E
 | PSRAM | 16 MB Octal, 200 MHz, 힙에 추가 |
 | CAN1 | TX GPIO35, RX GPIO36 |
 | CAN2 | TX GPIO37, RX GPIO38 |
-| 콘솔 | USB Serial/JTAG (PC에서 COM23). 플래시도 이 포트로 한다 |
+| 콘솔 | UART0 (TX GPIO59, RX GPIO58), 보드의 CP210x를 거쳐 PC에서 COM27. 플래시도 이 포트로 한다 |
+| 보조 출력 | USB Serial/JTAG. 로그만 나가고 입력은 받지 않는다 |
 | USB 어댑터 | HS OTG 포트. VID 0x303A, PID 0x4C31, 시리얼 = base MAC 12자리 |
 | RGB LED | GPIO60 (WS2812). cangaroo의 identify 기능에 쓴다 |
 | CAN 클럭 | 80 MHz (`CANFD_CLOCK_HZ`) |
@@ -53,26 +53,27 @@ PATH에는 `C:\Espressif\tools` 아래의 cmake, ninja, riscv32-esp-elf, ccache 
 $env:IDF_PATH = "C:\esp\v6.1\esp-idf"
 $env:IDF_TOOLS_PATH = "C:\Espressif\tools"
 $env:IDF_PYTHON_ENV_PATH = "C:\Espressif\tools\python\v6.1\venv"
-$env:ESPPORT = $null    # 시스템에 ESPPORT=COM4가 잡혀 있어 -p COM23과 충돌한다
+$env:ESPPORT = $null    # 시스템에 ESPPORT=COM4가 잡혀 있어 -p COM27과 충돌한다
 & "C:\Espressif\tools\python\v6.1\venv\Scripts\python.exe" "$env:IDF_PATH\tools\idf.py" build
-& "C:\Espressif\tools\python\v6.1\venv\Scripts\python.exe" "$env:IDF_PATH\tools\idf.py" -p COM23 flash
+& "C:\Espressif\tools\python\v6.1\venv\Scripts\python.exe" "$env:IDF_PATH\tools\idf.py" -p COM27 flash
 ```
 
-- `ESPPORT`가 `COM4`로 잡혀 있으면 `-p COM23`과 충돌해 플래시가 바로 실패한다. 먼저 지운다.
-- COM4는 다른 보드(CP210x)다. 이 보드는 COM23이다.
+- `ESPPORT`가 `COM4`로 잡혀 있으면 `-p COM27`과 충돌해 플래시가 바로 실패한다. 먼저 지운다.
+- COM4는 다른 보드다. 이 보드는 COM27이다. 둘 다 CP210x라서 장치 이름으로는 구분되지 않는다.
+- CP210x의 DTR/RTS 자동 리셋으로 다운로드 모드에 들어간다. 버튼을 누를 필요가 없다.
 
 ### 콘솔 포트와 UART MCP
 
-사용자의 UartTerminal 앱이 COM23을 열어 두고 MCP 서버(`uart`)로 공유한다.
-LLM은 `mcp__uart__*` 도구로 콘솔을 쓴다. 열린 포트가 여러 개라서 `port: "COM23"`을 항상 넣는다.
+사용자의 UartTerminal 앱이 COM27을 열어 두고 MCP 서버(`uart`)로 공유한다.
+LLM은 `mcp__uart__*` 도구로 콘솔을 쓴다. 열린 포트가 여러 개일 수 있어서 `port: "COM27"`을 항상 넣는다.
 
 플래시 순서는 다음과 같다.
 
-1. `uart_close(port="COM23")`로 포트를 넘긴다.
-2. 셸에서 `idf.py -p COM23 flash`를 실행한다.
-3. `uart_open(port="COM23")`로 다시 연다.
+1. `uart_close(port="COM27")`로 포트를 넘긴다.
+2. 셸에서 `idf.py -p COM27 flash`를 실행한다.
+3. `uart_open(port="COM27")`로 다시 연다.
 
-`uart_reset(port="COM23")`은 보드를 리셋한다. 부팅 로그가 끝나면 `USB connected`가 찍힌다.
+`uart_reset(port="COM27")`은 보드를 리셋한다. 부팅 로그가 끝나면 `USB connected`가 찍힌다.
 
 ### 저장소 규칙
 
@@ -114,7 +115,7 @@ LLM은 `mcp__uart__*` 도구로 콘솔을 쓴다. 열린 포트가 여러 개라
 
 `canfd_port`는 포트마다 RX 훅 하나와 TX 훅 하나만 가진다. 누가 훅을 거느냐가 곧 포트의 주인이다.
 
-### 포트 모드 (NVS 저장, 기본 MODE0)
+### 포트 모드 (NVS 저장, 기본 MODE1)
 
 | 모드 | 이름 | 동작 |
 |---|---|---|
@@ -227,7 +228,8 @@ TX 완료 ─► obd_tx_hook ─┬─ tag == OBD_ECU_TX_TAG ─► 성공이면
 
 ## 10. 주의 사항
 
-- **부팅 직후 첫 콘솔 입력이 깨진다.** 첫 명령이 "Unrecognized command"로 끝난다. 빈 줄을 먼저 한 번 보낸다.
+- **콘솔은 줄 편집 모드다.** UART 터미널에서는 입력할 때 프롬프트가 한 번 다시 그려진다(`canfd> modecanfd> mode`). 정상이다.
+  예전 USB Serial/JTAG 콘솔에서는 부팅 직후 첫 입력이 깨졌지만, UART0에서는 그런 현상이 없었다.
 - **MODE2 포트에 콘솔 `can_init`을 쓰지 않는다.** 포트를 다시 열면서 ECU 훅이 빠진다. 복구하려면 `mode <port> 2`를 다시 실행한다.
 - **MODE2 포트를 `can_test`의 수신 쪽으로 쓰지 않는다.** 시험이 끝나면 수신 포트의 RX 훅을 지워서 ECU가 빠진다.
   기본 방향(`both`, `dual`)은 두 포트 모두 수신 쪽이 된다. 복구 방법은 위와 같다.

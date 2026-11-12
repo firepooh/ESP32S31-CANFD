@@ -1,5 +1,5 @@
 /*
- * Per-port operating mode, stored in NVS (default MODE0).
+ * Per-port operating mode, stored in NVS (default MODE1).
  *
  *   MODE0  off: the port is never opened
  *   MODE1  USB adapter only (cangaroo opens and closes the port)

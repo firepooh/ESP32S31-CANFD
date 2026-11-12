@@ -1,7 +1,7 @@
 # ESP32-S31 CAN-FD 2포트 테스트
 
 ESP-IDF v6.1 기반 ESP32-S31 CAN-FD 2포트 시험 프로그램이다.
-USB Serial/JTAG 콘솔 명령으로 두 포트를 설정하고 송수신과 버스 에러 처리를 시험한다.
+UART0 콘솔 명령으로 두 포트를 설정하고 송수신과 버스 에러 처리를 시험한다.
 
 ## 하드웨어
 
@@ -11,7 +11,7 @@ USB Serial/JTAG 콘솔 명령으로 두 포트를 설정하고 송수신과 버�
 | PSRAM | 16 MB Octal (AP Memory 128 Mbit), 200 MHz, 힙에 추가 |
 | CAN1 | TX GPIO35 (J2-25), RX GPIO36 (J2-24) |
 | CAN2 | TX GPIO37 (J2-23), RX GPIO38 (J2-22) |
-| 콘솔 | USB Serial/JTAG 포트 (플래시와 콘솔을 같은 포트로 사용) |
+| 콘솔 | UART0 (TX GPIO59, RX GPIO58), 보드의 USB-UART 브리지. 플래시와 콘솔을 같은 포트로 사용 |
 
 보드에는 CAN 트랜시버가 없다.
 포트마다 CAN-FD 트랜시버(TJA1051, TCAN1042 등)를 따로 연결한다.
@@ -39,8 +39,9 @@ sdkconfig를 지웠을 때만 set-target을 다시 실행한다.
 
 ## 콘솔 명령
 
-부팅하면 두 포트를 기본 설정(공칭 500 kbps, 데이터 2 Mbps)으로 연다.
-프롬프트는 `canfd>`이다.
+부팅할 때는 MODE2(OBD ECU) 포트만 연다. 나머지 포트는 `can_init`으로 연다.
+기본 설정은 공칭 500 kbps, 데이터 2 Mbps다. 프롬프트는 `canfd>`이다.
+포트 모드(`mode`)와 OBD ECU(`obd`) 명령은 [docs/CONSOLE_COMMANDS.md](docs/CONSOLE_COMMANDS.md)에 있다.
 
 | 명령 | 기능 |
 |---|---|

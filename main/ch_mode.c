@@ -159,13 +159,13 @@ void ch_mode_init(void)
     nvs_handle_t h;
     const bool have_nvs = nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK;
     for (int port = CANFD_PORT_FIRST; port <= CANFD_PORT_LAST; port++) {
-        uint8_t mode = CH_MODE_OFF;
+        uint8_t mode = CH_MODE_USB;
         if (have_nvs) {
             char key[8];
             snprintf(key, sizeof(key), "mode%d", port);
             nvs_get_u8(h, key, &mode);
         }
-        s_mode[port_idx(port)] = mode < CH_MODE_COUNT ? (ch_mode_t)mode : CH_MODE_OFF;
+        s_mode[port_idx(port)] = mode < CH_MODE_COUNT ? (ch_mode_t)mode : CH_MODE_USB;
         obd_ecu_init(port);
         ESP_LOGI(TAG, "CAN%d: mode %d (%s)", port, s_mode[port_idx(port)], ch_mode_str(s_mode[port_idx(port)]));
         apply(port);

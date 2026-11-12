@@ -10,7 +10,7 @@ ESP32-S31 보드를 CAN 시험 도구로 쓸 때 보는 문서다.
 
 | 항목 | 값 |
 |---|---|
-| 콘솔 포트 | COM23 (USB Serial/JTAG), 115200 8N1 |
+| 콘솔 포트 | COM27 (UART0, 보드의 CP210x), 115200 8N1 |
 | 프롬프트 | `canfd> ` |
 | CAN1 / CAN2 | 같은 버스에 연결됨. 한 포트로 보낸 프레임을 다른 포트가 받는다 |
 | 포트 번호 | `1`, `2`, `all`. `can1`, `can2`도 된다 |
@@ -18,21 +18,22 @@ ESP32-S31 보드를 CAN 시험 도구로 쓸 때 보는 문서다.
 
 ### LLM이 UART MCP로 쓰는 방법
 
-COM23은 사용자의 UartTerminal이 열어 두고 MCP(`uart`)로 공유한다.
-다른 포트도 열려 있으므로 모든 호출에 `port: "COM23"`을 넣는다.
+COM27은 사용자의 UartTerminal이 열어 두고 MCP(`uart`)로 공유한다.
+다른 포트도 열려 있을 수 있으므로 모든 호출에 `port: "COM27"`을 넣는다.
 
-1. `uart_status(port="COM23")`로 `end_cursor`를 얻는다.
-2. `uart_send(port="COM23", text="명령")`으로 명령을 보낸다.
-3. `uart_expect(port="COM23", cursor=<1에서 얻은 값>, pattern="canfd> $")`로 응답을 기다린다.
+1. `uart_status(port="COM27")`로 `end_cursor`를 얻는다.
+2. `uart_send(port="COM27", text="명령")`으로 명령을 보낸다.
+3. `uart_expect(port="COM27", cursor=<1에서 얻은 값>, pattern="canfd> $")`로 응답을 기다린다.
 
 `uart_expect`에 cursor를 넘기지 않으면 호출 뒤에 도착한 데이터만 본다. 응답이 먼저 와 버리면 놓친다.
 그래서 보내기 전에 cursor를 잡아 두고 넘긴다.
 여러 명령을 이어서 보낼 때는 이전 `uart_expect`가 돌려준 cursor를 다음 호출에 넘긴다.
 
-### 부팅 직후 주의
+### 출력 모양
 
-리셋 뒤 첫 콘솔 입력은 "Unrecognized command"로 깨진다.
-빈 줄(`uart_send(text="")`)을 먼저 한 번 보내고 프롬프트를 기다린 뒤 명령을 보낸다.
+콘솔은 줄 편집 모드라서 입력할 때 프롬프트가 한 번 다시 그려진다.
+`mode`를 보내면 `canfd> modecanfd> mode`처럼 보인다. 정상이다.
+응답 패턴은 명령 이름 뒤의 내용(예: `CAN2: mode \d`)으로 잡는다.
 
 ## 1. 시험 구성 레시피
 
@@ -95,8 +96,8 @@ mode <port> <0|1|2>     # 모드를 바꾸고 NVS에 저장한다
 
 | 값 | 의미 |
 |---|---|
-| 0 | off. 부팅 때 열지 않고, cangaroo의 열기 요청도 거부한다 (기본값) |
-| 1 | USB 어댑터 전용. cangaroo가 열고 닫는다 |
+| 0 | off. 부팅 때 열지 않고, cangaroo의 열기 요청도 거부한다 |
+| 1 | USB 어댑터 전용. cangaroo가 열고 닫는다 (기본값) |
 | 2 | USB 어댑터 + OBD ECU. ECU가 항상 동작한다 |
 
 - MODE2로 바꾸면 그 자리에서 포트를 500 kbit/s로 열고 ECU를 붙인다.
@@ -338,10 +339,9 @@ can_test [-D dir] [-n n] [-l n] [-i hex] [-e] [-c] [--nobrs] [-g ms] [-w us] [-t
 
 | 증상 | 원인과 조치 |
 |---|---|
-| 첫 명령이 `Unrecognized command` | 부팅 직후 입력이 깨지는 현상. 빈 줄을 먼저 보낸다 |
 | ECU가 응답하지 않음 | `mode`로 MODE2인지 확인. `can_init`이나 `can_test` 뒤라면 `mode <port> 2`로 다시 붙인다 |
 | 응답이 덤프에 안 보임 | MODE2 포트를 덤프하고 있다. 테스터 포트(예: CAN2)를 덤프한다 |
 | VIN이나 DTC의 CF가 안 옴 | FC를 7DF로 보냈거나 1초가 지났다. 7E0으로 `30 00 00`을 바로 보낸다 |
 | `mode` 변경이 거부됨 | cangaroo가 그 채널을 쓰고 있다. cangaroo에서 측정을 멈춘다 |
 | `can_send`에서 `sent 0` | 상대 노드의 ACK가 없다. 상대 포트가 열려 있는지, 비트레이트가 같은지 확인한다 |
-| 플래시가 COM23을 못 엶 | UartTerminal이 포트를 쥐고 있다. `uart_close` 뒤 플래시하고 `uart_open`으로 다시 연다 |
+| 플래시가 COM27을 못 엶 | UartTerminal이 포트를 쥐고 있다. `uart_close` 뒤 플래시하고 `uart_open`으로 다시 연다 |
