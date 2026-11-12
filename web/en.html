@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ESP32-S31 CAN-FD Web Flasher</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9; --fg: #1d2330; --muted: #677085; --card: #ffffff; --line: #d9dde5;
+    --accent: #2563eb; --accent-fg: #ffffff; --neutral: #5b6475; --danger: #c43c3c;
+    --warn-bg: #fff3c4; --warn-fg: #5a4600; --log-bg: #11151c; --log-fg: #c8f0c8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --fg: #e4e7ee; --muted: #98a1b3; --card: #1b2029; --line: #2e3542;
+      --accent: #4c86f5; --neutral: #4a5263; --danger: #d65656;
+      --warn-bg: #4a3d0c; --warn-fg: #ffe9a3; --log-bg: #0b0e13;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font-family: system-ui, -apple-system, "Segoe UI", sans-serif; line-height: 1.55; }
+  main { max-width: 840px; margin: 0 auto; padding: 28px 16px 64px; }
+  h1 { font-size: 1.45rem; margin: 0 0 6px; }
+  h2 { font-size: 1.05rem; margin: 0 0 12px; }
+  p { margin: 6px 0; }
+  a { color: var(--accent); }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: .9em; }
+  .muted { color: var(--muted); font-size: .92rem; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin: 16px 0; }
+  .warn { background: var(--warn-bg); color: var(--warn-fg); border-radius: 10px; padding: 10px 14px; margin: 12px 0; }
+  label { display: block; font-weight: 600; margin-bottom: 6px; }
+  select, button { font: inherit; padding: 9px 12px; border-radius: 8px; }
+  select { width: 100%; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .row > .grow { flex: 1 1 260px; min-width: 0; }
+  .row > .baud { flex: 0 0 140px; }
+  .info { margin-top: 10px; font-size: .9rem; color: var(--muted); overflow-wrap: anywhere; }
+  label.check { display: flex; align-items: center; gap: 8px; margin: 14px 0 0; font-weight: 600; }
+  label.check input { width: 18px; height: 18px; margin: 0; }
+  .btns { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  button { border: 0; background: var(--accent); color: var(--accent-fg); cursor: pointer; }
+  button.neutral { background: var(--neutral); }
+  button.danger { background: var(--danger); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .progress { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+  progress { flex: 1; height: 16px; }
+  #log { background: var(--log-bg); color: var(--log-fg); font-family: ui-monospace, Consolas, monospace;
+         font-size: .84rem; padding: 12px; border-radius: 8px; height: 260px; overflow: auto; white-space: pre-wrap; }
+  ol { margin: 6px 0 0; padding-left: 20px; }
+  li { margin: 3px 0; }
+  .lang { text-align: right; font-size: .9rem; margin: 0 0 8px; }
+</style>
+</head>
+<body>
+<main>
+  <p class="lang"><a href="./" lang="ko">한국어</a> | <b>English</b></p>
+  <h1>ESP32-S31 CAN-FD Web Flasher</h1>
+  <p class="muted">Flash the ESP32-S31-Function-CoreBoard-1 firmware (CAN-FD 2-port tester, USB-CAN adapter,
+     OBD-II ECU simulator) straight from the browser. Use desktop Chrome or Edge.</p>
+
+  <div id="nowebserial" class="warn" hidden>
+    This browser does not support Web Serial. Please open this page in desktop Chrome or Edge.
+  </div>
+
+  <section class="card">
+    <div class="row">
+      <div class="grow">
+        <label for="ver">Firmware version (merged.bin)</label>
+        <select id="ver"><option>Loading the list…</option></select>
+      </div>
+      <div class="baud">
+        <label for="baud">Baud</label>
+        <select id="baud">
+          <option value="115200">115200</option>
+          <option value="230400">230400</option>
+          <option value="460800" selected>460800</option>
+          <option value="921600">921600</option>
+        </select>
+      </div>
+    </div>
+    <div id="info" class="info"></div>
+    <label class="check">
+      <input type="checkbox" id="nostub" checked />
+      Flash with the ROM loader (no stub)
+    </label>
+    <p class="muted" style="margin-top:2px">ESP-IDF flashes the ESP32-S31 without the stub (<code>--no-stub</code>),
+       so this is the default. Uncheck it to use the esptool-js stub, which is faster and allows erasing the whole flash.</p>
+    <div class="btns">
+      <button id="connect">1. Connect</button>
+      <button id="flash" disabled>2. Flash (0x0)</button>
+      <button id="erase" class="danger" disabled>Erase entire flash</button>
+      <button id="disconnect" class="neutral" disabled>Disconnect</button>
+    </div>
+    <div class="progress">
+      <progress id="prog" value="0" max="100"></progress>
+      <span id="progtxt" class="muted">0%</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>How to use</h2>
+    <ol>
+      <li>Connect the board's <b>USB-UART (CP210x) port</b> to the PC.</li>
+      <li>Press <b>1. Connect</b> and pick the board's COM port. Check that the chip is an ESP32-S31.</li>
+      <li>Choose a version and press <b>2. Flash</b>. The board resets automatically when done.</li>
+      <li>If it does not connect, hold the Boot button, press and release Reset to enter download mode, then connect again.</li>
+    </ol>
+  </section>
+
+  <section class="card">
+    <h2>Log</h2>
+    <div id="log"></div>
+  </section>
+
+  <p class="muted">
+    merged.bin is a single image with the bootloader, partition table and app, written from 0x0.
+    The binaries are built automatically with ESP-IDF v6.1 for the
+    <a id="releases" href="https://github.com/firepooh/ESP32S31-CANFD/releases">GitHub releases</a>.
+    Source: <a href="https://github.com/firepooh/ESP32S31-CANFD">firepooh/ESP32S31-CANFD</a>.
+    Flashing engine: <a href="https://github.com/espressif/esptool-js">esptool-js</a>.
+  </p>
+</main>
+
+<script type="module">
+  import { ESPLoader, Transport } from "https://cdn.jsdelivr.net/npm/esptool-js@0.7.1/+esm";
+  import CryptoJS from "https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/+esm";
+
+  const REPO_URL = "https://github.com/firepooh/ESP32S31-CANFD";
+  const EXPECTED_CHIP = "ESP32-S31";
+
+  const $ = (id) => document.getElementById(id);
+  const logEl = $("log");
+  const log = (s = "") => { logEl.textContent += s + "\n"; logEl.scrollTop = logEl.scrollHeight; };
+  const terminal = {
+    clean() { logEl.textContent = ""; },
+    writeLine(d) { log(d); },
+    write(d) { logEl.textContent += d; logEl.scrollTop = logEl.scrollHeight; },
+  };
+
+  // Skipping the stub talks to the chip's ROM loader directly, like esptool --no-stub.
+  // The ROM loader supports compressed writes and MD5 checks; erasing the whole flash is stub-only.
+  class Loader extends ESPLoader {
+    constructor(options, noStub) { super(options); this.noStub = noStub; }
+    async runStub() {
+      if (this.noStub) { this.info("Continuing with the ROM loader, no stub."); return this.chip; }
+      return super.runStub();
+    }
+  }
+
+  let items = [];
+  let transport = null, esploader = null;
+
+  if (!("serial" in navigator)) {
+    $("nowebserial").hidden = false;
+    $("connect").disabled = true;
+  }
+
+  const fmtSize = (n) => (n >= 1048576 ? (n / 1048576).toFixed(2) + " MiB" : (n / 1024).toFixed(1) + " KiB");
+  const hex = (buf) => Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, "0")).join("");
+
+  function setBusy(busy) {
+    const connected = !!esploader;
+    $("flash").disabled = busy || !connected || !items.length;
+    $("erase").disabled = busy || !connected || esploader.noStub;
+    $("disconnect").disabled = busy || !connected;
+    $("connect").disabled = busy || connected || !("serial" in navigator);
+    $("nostub").disabled = busy || connected;
+  }
+
+  function selected() { return items[$("ver").selectedIndex]; }
+
+  // Date, size and download links of the selected version. No innerHTML.
+  function showInfo() {
+    const box = $("info");
+    box.replaceChildren();
+    const it = selected();
+    if (!it) return;
+    const parts = [];
+    if (it.date) parts.push(it.date);
+    if (it.size) parts.push(fmtSize(it.size));
+    box.append(parts.join(" · ") + (parts.length ? " · " : ""));
+    const dl = document.createElement("a");
+    dl.href = it.file; dl.download = it.file.split("/").pop(); dl.textContent = "Download";
+    const rel = document.createElement("a");
+    rel.href = `${REPO_URL}/releases/tag/${encodeURIComponent(it.version)}`; rel.textContent = "Release notes";
+    box.append(dl, " · ", rel);
+    if (it.sha256) {
+      const sha = document.createElement("div");
+      sha.textContent = "SHA-256: " + it.sha256;
+      box.append(sha);
+    }
+  }
+
+  async function loadManifest() {
+    const sel = $("ver");
+    try {
+      const res = await fetch("./manifest.json", { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      items = await res.json();
+      sel.replaceChildren();
+      if (!items.length) {
+        sel.append(new Option("No firmware released yet"));
+        log("[info] No firmware has been released yet. Pushing a v* tag to the repository adds it to the list.");
+        return;
+      }
+      items.forEach((it, i) => {
+        let label = it.version;
+        if (i === 0) label += "  (latest)";
+        if (it.prerelease) label += "  (pre-release)";
+        sel.append(new Option(label, it.file));
+      });
+      showInfo();
+    } catch (e) {
+      sel.replaceChildren(new Option("Could not load the list"));
+      log("[error] Loading manifest.json failed: " + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  $("ver").addEventListener("change", showInfo);
+
+  $("connect").addEventListener("click", async () => {
+    setBusy(true);
+    try {
+      const port = await navigator.serial.requestPort({});
+      transport = new Transport(port, true);
+      const loader = new Loader({ transport, baudrate: parseInt($("baud").value, 10), terminal }, $("nostub").checked);
+      const chip = await loader.main();
+      log("[ok] Connected chip: " + chip);
+      if (!String(chip).toUpperCase().includes(EXPECTED_CHIP)) {
+        log(`[error] This firmware is for the ${EXPECTED_CHIP} only. Disconnecting.`);
+        try { await transport.disconnect(); } catch (_) {}
+        transport = null;
+        return;
+      }
+      esploader = loader;
+    } catch (e) {
+      log("[error] Connection failed: " + e.message);
+      try { if (transport) await transport.disconnect(); } catch (_) {}
+      transport = null;
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  $("flash").addEventListener("click", async () => {
+    const it = selected();
+    if (!it || !esploader) return;
+    setBusy(true);
+    $("prog").value = 0; $("progtxt").textContent = "0%";
+    try {
+      log("[..] Downloading: " + it.file);
+      const res = await fetch(it.file, { cache: "no-store" });
+      if (!res.ok) throw new Error("Download HTTP " + res.status);
+      const data = new Uint8Array(await res.arrayBuffer());
+      if (it.sha256 && globalThis.crypto && crypto.subtle) {
+        const got = hex(await crypto.subtle.digest("SHA-256", data));
+        if (got !== it.sha256) throw new Error("SHA-256 does not match the manifest. The file may be corrupted.");
+        log("[ok] SHA-256 matches");
+      }
+      log(`[..] Writing ${data.length} bytes from 0x0.`);
+      await esploader.writeFlash({
+        fileArray: [{ data, address: 0x0 }],
+        flashMode: "keep", flashFreq: "keep", flashSize: "keep",
+        eraseAll: false, compress: true,
+        reportProgress: (_idx, written, total) => {
+          const pct = Math.round((written / total) * 100);
+          $("prog").value = pct; $("progtxt").textContent = pct + "%";
+        },
+        calculateMD5Hash: (image) => CryptoJS.MD5(CryptoJS.lib.WordArray.create(image)).toString(),
+      });
+      log("[done] Flashing finished. Resetting the board.");
+      try { await esploader.after("hard_reset"); } catch (e) { log("[info] Automatic reset failed. Please press the Reset button."); }
+    } catch (e) {
+      log("[error] Flashing failed: " + e.message);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  $("erase").addEventListener("click", async () => {
+    if (!esploader) return;
+    if (!confirm("This erases the entire flash memory. Continue?")) return;
+    setBusy(true);
+    try {
+      log("[..] Erasing the entire flash… (this can take tens of seconds)");
+      await esploader.eraseFlash();
+      log("[done] Erase finished");
+    } catch (e) {
+      log("[error] Erase failed: " + e.message);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  $("disconnect").addEventListener("click", async () => {
+    try { if (transport) await transport.disconnect(); } catch (_) {}
+    transport = null; esploader = null;
+    log("[ok] Disconnected.");
+    setBusy(false);
+  });
+
+  loadManifest();
+</script>
+</body>
+</html>

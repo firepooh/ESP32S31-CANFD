@@ -11,6 +11,16 @@ A 2-port CAN-FD program for the ESP32-S31, built with ESP-IDF v6.1. One board pl
 Design details are in [docs/LLM_WIKI.md](docs/LLM_WIKI.md) and the full console reference is in
 [docs/CONSOLE_COMMANDS.md](docs/CONSOLE_COMMANDS.md) (both in Korean).
 
+## Web flasher
+
+**<https://firepooh.github.io/ESP32S31-CANFD/en.html>**
+
+1. Open it in desktop Chrome or Edge.
+2. Connect the board's USB-UART (CP210x) port to the PC.
+3. Choose a version and press **Connect** → **Flash**.
+
+Binaries and esptool commands are on the [Releases](https://github.com/firepooh/ESP32S31-CANFD/releases) page.
+
 ## Hardware
 
 | Item | Details |
@@ -41,6 +51,10 @@ idf.py -p COMx flash monitor
 
 The sdkconfig in this folder is already set up for the esp32s31.
 Run set-target again only after deleting the sdkconfig.
+
+Pushing a `v*` tag makes GitHub Actions build the firmware and update the release and the web flasher.
+- Tags with a `-` (`v1.1.0-rc1`) become pre-releases.
+- `dependencies.lock` pins the component versions.
 
 Pins, default bitrates, queue depths and the USB PID are set in menuconfig
 under `CAN-FD 2-Port Test Configuration`.

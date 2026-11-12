@@ -1,0 +1,88 @@
+# 릴리즈의 merged.bin을 모아 웹 플래셔(GitHub Pages)를 다시 만든다.
+# 펌웨어 파일을 페이지와 같은 도메인에 두어야 브라우저가 CORS 제한 없이 내려받을 수 있다.
+# 실행 계기: release.yml이 릴리즈를 올린 뒤, web/ 변경을 main에 푸시했을 때, 수동 실행.
+# 저장소 설정 Settings > Pages > Source를 "GitHub Actions"로 한 번 바꿔 두어야 한다.
+name: Web flasher
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/pages.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Collect release binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p site/firmware
+          cp -r web/. site/
+
+          # 최신 릴리즈가 먼저 오도록 정렬한다. 초안(draft)은 뺀다.
+          gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 100 \
+            --json tagName,publishedAt,isPrerelease \
+            --jq 'sort_by(.publishedAt) | reverse | .[] | [.tagName, .publishedAt, .isPrerelease] | @tsv' \
+            > releases.tsv
+
+          : > entries.jsonl
+          while IFS=$'\t' read -r tag date pre; do
+            dir="site/firmware/${tag}"
+            mkdir -p "$dir"
+            if ! gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern '*-merged.bin' --dir "$dir"; then
+              echo "건너뜀: ${tag} 릴리즈에 merged.bin이 없다"
+              rmdir "$dir" || true
+              continue
+            fi
+            for f in "$dir"/*-merged.bin; do
+              jq -nc \
+                --arg version "$tag" \
+                --arg file "firmware/${tag}/$(basename "$f")" \
+                --arg date "${date%%T*}" \
+                --argjson prerelease "$pre" \
+                --argjson size "$(stat -c %s "$f")" \
+                --arg sha256 "$(sha256sum "$f" | cut -d' ' -f1)" \
+                '{version: $version, file: $file, date: $date, prerelease: $prerelease, size: $size, sha256: $sha256}' \
+                >> entries.jsonl
+            done
+          done < releases.tsv
+
+          jq -s . entries.jsonl > site/manifest.json
+          cat site/manifest.json
+          find site -type f | sort
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

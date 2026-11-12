@@ -10,6 +10,16 @@ ESP-IDF v6.1 기반 ESP32-S31 CAN-FD 2포트 프로그램이다. 보드 하나�
 
 자세한 구조는 [docs/LLM_WIKI.md](docs/LLM_WIKI.md)에, 콘솔 명령 전체는 [docs/CONSOLE_COMMANDS.md](docs/CONSOLE_COMMANDS.md)에 있다.
 
+## 웹 플래셔
+
+**<https://firepooh.github.io/ESP32S31-CANFD/>**
+
+1. 데스크톱 Chrome이나 Edge로 연다.
+2. 보드의 USB-UART(CP210x) 포트를 PC에 연결한다.
+3. 버전을 고르고 **연결** → **플래시**를 누른다.
+
+바이너리와 esptool 명령은 [Releases](https://github.com/firepooh/ESP32S31-CANFD/releases)에 있다.
+
 ## 하드웨어
 
 | 항목 | 내용 |
@@ -41,6 +51,10 @@ idf.py -p COMx flash monitor
 
 이 폴더의 sdkconfig는 이미 esp32s31로 설정되어 있다.
 sdkconfig를 지웠을 때만 set-target을 다시 실행한다.
+
+`v*` 태그를 푸시하면 GitHub Actions가 빌드해 릴리즈와 웹 플래셔를 갱신한다.
+- `-`가 들어간 태그(`v1.1.0-rc1`)는 프리릴리즈가 된다.
+- `dependencies.lock`으로 컴포넌트 버전을 고정한다.
 
 핀 번호, 기본 비트레이트, 큐 깊이, USB PID는 menuconfig에서 바꾼다.
 메뉴 이름은 `CAN-FD 2-Port Test Configuration`이다.
